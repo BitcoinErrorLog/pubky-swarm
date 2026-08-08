@@ -1,0 +1,23 @@
+[package]
+name = "dataset-torrent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+dataset-core = { path = "../dataset-core" }
+mainline-discovery = { path = "../mainline-discovery" }
+swarm-head = { path = "../swarm-head" }
+swarm-protocol = { path = "../swarm-protocol" }
+tokio = { workspace = true, features = ["io-util"] }
+torrent-engine = { path = "../torrent-engine" }
+
+[dev-dependencies]
+mainline.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

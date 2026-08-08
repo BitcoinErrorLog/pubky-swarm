@@ -1,0 +1,446 @@
+name: Production release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: production-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  preflight:
+    name: Verify release authorization
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment: production-release
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Require an immutable version tag
+        shell: bash
+        run: |
+          python3 scripts/release/verify-version.py "$RELEASE_TAG"
+          if ! git tag --points-at HEAD | while IFS= read -r tag; do
+            [[ "$tag" == "$RELEASE_TAG" ]] && exit 0
+          done; then
+            printf 'checked-out commit is not tagged %s\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Require production signing and notarization values
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          scripts/release/require-release-secrets.sh \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_TEAM_ID \
+            TAURI_SIGNING_PRIVATE_KEY \
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+            TAURI_SIGNING_PUBLIC_KEY \
+            WINDOWS_CERTIFICATE \
+            WINDOWS_CERTIFICATE_PASSWORD
+
+  linux:
+    name: Linux bundles
+    needs: preflight
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    environment: production-release
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            cmake \
+            libboost-dev \
+            libssl-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            ninja-build \
+            patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+
+      - name: Cache Rust build inputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux
+          cache-on-failure: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build Linux bundles
+        working-directory: apps/desktop
+        run: npm run tauri build -- --bundles deb,appimage --ci
+
+      - name: Collect and sign Linux bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          scripts/release/collect-artifacts.sh linux release-artifacts
+          scripts/release/sign-artifacts.sh release-artifacts
+
+      - name: Upload Linux bundles
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS bundles
+    needs: preflight
+    runs-on: macos-14
+    timeout-minutes: 90
+    environment: production-release
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+
+      - name: Install libtorrent prerequisites
+        run: brew install boost cmake openssl@3
+
+      - name: Cache Rust build inputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos
+          cache-on-failure: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Import Apple Developer ID certificate
+        uses: apple-actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Build, sign, and notarize macOS bundles
+        working-directory: apps/desktop
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run tauri build -- --bundles app,dmg --ci
+
+      - name: Verify Apple signatures and notarization
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(target/release/bundle/macos/*.app)
+          dmgs=(target/release/bundle/dmg/*.dmg)
+          if (( ${#apps[@]} == 0 || ${#dmgs[@]} == 0 )); then
+            printf 'expected signed app and dmg bundles were not produced\n' >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+          done
+          for dmg in "${dmgs[@]}"; do
+            codesign --verify --strict --verbose=2 "$dmg"
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+          done
+
+      - name: Collect and sign macOS bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          scripts/release/collect-artifacts.sh macos release-artifacts
+          scripts/release/sign-artifacts.sh release-artifacts
+
+      - name: Upload macOS bundles
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-macos
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows bundles
+    needs: preflight
+    runs-on: windows-latest
+    timeout-minutes: 90
+    environment: production-release
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+
+      - name: Install libtorrent prerequisites
+        shell: pwsh
+        run: |
+          vcpkg install boost-asio:x64-windows boost-system:x64-windows openssl:x64-windows
+          "CMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BOOST_ROOT=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OPENSSL_ROOT_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Cache Rust build inputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+          cache-on-failure: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Import Windows signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "pubky-swarm-release.pfx"
+          [IO.File]::WriteAllBytes(
+            $pfxPath,
+            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          )
+          $password = ConvertTo-SecureString `
+            -String $env:WINDOWS_CERTIFICATE_PASSWORD `
+            -AsPlainText `
+            -Force
+          $certificate = Import-PfxCertificate `
+            -FilePath $pfxPath `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password $password
+          Remove-Item $pfxPath -Force
+          if (-not $certificate.HasPrivateKey) {
+            throw "imported Windows certificate has no private key"
+          }
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build and Authenticode-sign Windows bundles
+        shell: pwsh
+        working-directory: apps/desktop
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.release.json"
+          @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $env:WINDOWS_CERTIFICATE_THUMBPRINT
+                digestAlgorithm = "sha256"
+                timestampUrl = "http://timestamp.digicert.com"
+              }
+            }
+          } | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath
+          npm run tauri build -- `
+            --bundles msi,nsis `
+            --config $configPath `
+            --ci
+
+      - name: Verify Authenticode signatures and timestamps
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem target\release\bundle -Recurse -File |
+            Where-Object { $_.Extension -in ".exe", ".msi" }
+          if ($artifacts.Count -eq 0) {
+            throw "no Windows installers found to verify"
+          }
+          foreach ($artifact in $artifacts) {
+            $signature = Get-AuthenticodeSignature $artifact.FullName
+            if ($signature.Status -ne "Valid") {
+              throw "invalid Authenticode signature on $($artifact.FullName): $($signature.Status)"
+            }
+            if ($null -eq $signature.TimeStamperCertificate) {
+              throw "missing Authenticode timestamp on $($artifact.FullName)"
+            }
+          }
+
+      - name: Collect and sign Windows bundles
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          scripts/release/collect-artifacts.sh windows release-artifacts
+          scripts/release/sign-artifacts.sh release-artifacts
+
+      - name: Upload Windows bundles
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-windows
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-draft:
+    name: Attest and create draft release
+    needs:
+      - linux
+      - macos
+      - windows
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    environment: production-release
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked signer
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: release-assets/pubky-swarm-${{ env.RELEASE_TAG }}.sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Sign SBOM and checksum manifest
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          scripts/release/sign-artifacts.sh \
+            release-assets \
+            "pubky-swarm-${RELEASE_TAG}.sbom.cdx.json"
+          scripts/release/checksums.sh release-assets
+          scripts/release/sign-artifacts.sh release-assets SHA256SUMS
+
+      - name: Attest release subjects
+        uses: actions/attest@v4
+        with:
+          subject-checksums: release-assets/SHA256SUMS
+
+      - name: Preserve finalized release set
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ env.RELEASE_TAG }}
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            printf 'release already exists for %s; refusing to overwrite assets\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            --draft \
+            --verify-tag \
+            --title "Pubky Swarm ${RELEASE_TAG}" \
+            --generate-notes
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if (( ${#assets[@]} == 0 )); then
+            printf 'no finalized assets available for upload\n' >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}"

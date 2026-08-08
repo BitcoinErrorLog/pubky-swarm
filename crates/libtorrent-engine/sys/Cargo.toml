@@ -1,0 +1,15 @@
+[package]
+name = "libtorrent-engine-sys"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT"
+publish = false
+build = "../build.rs"
+
+[dependencies]
+cxx = "=1.0.199"
+
+[build-dependencies]
+cmake = "0.1"
+cxx-build = "=1.0.199"

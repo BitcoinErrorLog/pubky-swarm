@@ -1,0 +1,60 @@
+[workspace]
+members = [
+    "apps/desktop/src-tauri", "crates/benchmark", "crates/dataset-core", "crates/dataset-homeserver", "crates/dataset-torrent",
+    "crates/libtorrent-engine",
+    "crates/libtorrent-engine/sys",
+    "crates/mainline-discovery",
+    "crates/pubky-adapter", "crates/qbittorrent-connector", "crates/stream-gateway",
+    "crates/swarm-head",
+    "crates/swarm-protocol", "crates/swarm-store",
+    "crates/torrent-engine", "services/discovery", "services/seeder",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT"
+repository = "https://github.com/BitcoinErrorLog/pubky-swarm"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+blake3 = "1"
+bytes = "1"
+futures = "0.3"
+hex = "0.4"
+librqbit = { version = "=8.1.1", default-features = false, features = ["rust-tls"] }
+mainline = "=8.0.0"
+pubky = { version = "=0.10.0", features = ["json"] }
+pubky-app-specs = "=0.7.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+url = { version = "2", features = ["serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[patch.crates-io]
+quick-xml-0-37-rustsec-backport = { package = "quick-xml", path = "vendor/security-patches/quick-xml-0.37.5-rustsec-backport" }
+quick-xml-0-38-rustsec-backport = { package = "quick-xml", path = "vendor/security-patches/quick-xml-0.38.4-rustsec-backport" }
+
+# The external workspace filesystem does not support Cargo's hard-linked
+# incremental cache and otherwise duplicates tens of gigabytes of artifacts.
+[profile.dev]
+debug = 1
+incremental = false
+
+[profile.test]
+debug = 1
+incremental = false

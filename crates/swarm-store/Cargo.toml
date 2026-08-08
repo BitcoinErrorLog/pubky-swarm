@@ -1,0 +1,21 @@
+[package]
+name = "swarm-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+swarm-protocol = { version = "0.1.0", path = "../swarm-protocol" }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pubky.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

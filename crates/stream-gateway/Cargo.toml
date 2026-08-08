@@ -1,0 +1,26 @@
+[package]
+name = "stream-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = "0.8"
+blake3.workspace = true
+bytes.workspace = true
+getrandom = "0.4"
+http = "1.5.0"
+mime_guess = "2.0.5"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "net"] }
+tokio-util = { version = "0.7", features = ["io"] }
+torrent-engine = { version = "0.1.0", path = "../torrent-engine" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tempfile.workspace = true

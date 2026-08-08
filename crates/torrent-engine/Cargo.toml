@@ -1,0 +1,27 @@
+[package]
+name = "torrent-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+librqbit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+mainline.workspace = true
+mainline-discovery = { path = "../mainline-discovery" }
+swarm-protocol = { path = "../swarm-protocol" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,70 @@
+import { invoke } from "@tauri-apps/api/core";
+import type {
+  AuthStart,
+  AuthStatus,
+  CreateReleaseRequest,
+  ImportMagnetRequest,
+  ImportTorrentFileRequest,
+  Profile,
+  QbittorrentConnectRequest,
+  QbittorrentStatus,
+  QbittorrentTorrent,
+  ReleaseV1,
+  TorrentSummary,
+} from "./types";
+
+export const api = {
+  startAuth: () => invoke<AuthStart>("start_auth"),
+  pollAuth: () => invoke<AuthStatus>("poll_auth"),
+  authStatus: () => invoke<AuthStatus>("get_auth_status"),
+  profile: (user: string) => invoke<Profile>("get_profile", { user }),
+  releases: (user: string) =>
+    invoke<ReleaseV1[]>("list_releases", { user }),
+  searchCatalog: (query: string, limit = 25) =>
+    invoke<ReleaseV1[]>("search_catalog", { query, limit }),
+  follow: (user: string) =>
+    invoke<string[]>("follow_publisher", { user }),
+  followed: () => invoke<string[]>("list_followed"),
+  createRelease: (request: CreateReleaseRequest) =>
+    invoke<ReleaseV1>("create_release", { request }),
+  downloadRelease: (release: ReleaseV1, onlyFiles?: number[]) =>
+    invoke<TorrentSummary>("download_release", {
+      release,
+      onlyFiles: onlyFiles ?? null,
+    }),
+  importMagnet: (request: ImportMagnetRequest) =>
+    invoke<TorrentSummary>("import_magnet", { request }),
+  importTorrentFile: (request: ImportTorrentFileRequest) =>
+    invoke<TorrentSummary>("import_torrent_file", { request }),
+  torrents: () => invoke<TorrentSummary[]>("list_torrents"),
+  pauseTorrent: (torrentId: number) =>
+    invoke<void>("pause_torrent", { torrentId }),
+  resumeTorrent: (torrentId: number) =>
+    invoke<void>("resume_torrent", { torrentId }),
+  forgetTorrent: (torrentId: number, deleteFiles: boolean) =>
+    invoke<void>("forget_torrent", { torrentId, deleteFiles }),
+  updateTorrentFiles: (torrentId: number, files: number[]) =>
+    invoke<void>("update_torrent_files", { torrentId, files }),
+  connectQbittorrent: (request: QbittorrentConnectRequest) =>
+    invoke<QbittorrentStatus>("connect_qbittorrent", { request }),
+  disconnectQbittorrent: () =>
+    invoke<QbittorrentStatus>("disconnect_qbittorrent"),
+  qbittorrentStatus: () =>
+    invoke<QbittorrentStatus>("get_qbittorrent_status"),
+  sendToQbittorrent: (
+    magnet: string,
+    savePath: string | undefined,
+    tags: string[],
+  ) =>
+    invoke<void>("send_magnet_to_qbittorrent", {
+      magnet,
+      savePath: savePath ?? null,
+      tags,
+    }),
+  qbittorrentTorrents: () =>
+    invoke<QbittorrentTorrent[]>("list_qbittorrent_torrents"),
+  importQbittorrentTorrent: (hash: string) =>
+    invoke<TorrentSummary>("import_completed_qbittorrent_torrent", { hash }),
+  streamUrl: (torrentId: number, fileIndex: number) =>
+    invoke<string>("get_stream_url", { torrentId, fileIndex }),
+};

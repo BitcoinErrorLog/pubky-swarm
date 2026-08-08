@@ -1,0 +1,23 @@
+[package]
+name = "dataset-homeserver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+dataset-core = { path = "../dataset-core" }
+pubky.workspace = true
+pubky-adapter = { path = "../pubky-adapter" }
+serde.workspace = true
+swarm-protocol = { path = "../swarm-protocol" }
+tokio.workspace = true
+
+[dev-dependencies]
+pubky-testnet = "=0.10.0"
+serde_json.workspace = true
+
+[lints]
+workspace = true

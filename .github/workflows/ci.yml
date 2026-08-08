@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  cross-platform:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - windows-latest
+          - ubuntu-22.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            cmake \
+            libboost-dev \
+            libssl-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            ninja-build \
+            patchelf
+
+      - name: Install macOS libtorrent prerequisites
+        if: runner.os == 'macOS'
+        run: brew install boost cmake openssl@3
+
+      - name: Install Windows libtorrent prerequisites
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install boost-asio:x64-windows boost-system:x64-windows openssl:x64-windows
+          "CMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BOOST_ROOT=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OPENSSL_ROOT_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+          components: clippy, rustfmt
+
+      - name: Cache Rust build inputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}
+          cache-on-failure: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint Rust workspace
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test portable Rust workspace
+        run: >-
+          cargo test --workspace
+          --exclude pubky-adapter
+          --exclude dataset-homeserver
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Smoke-test Tauri build
+        working-directory: apps/desktop
+        run: npm run tauri build -- --debug --no-bundle --ci
+
+  pubky-integration:
+    name: Pubky integration (PostgreSQL)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_PUBKY_CONNECTION_STRING: postgres://postgres:postgres@127.0.0.1:5432/postgres?pubky-test=true
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+
+      - name: Cache Rust build inputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pubky-integration
+          cache-on-failure: false
+
+      - name: Run PostgreSQL-backed Pubky tests
+        run: cargo test -p pubky-adapter -p dataset-homeserver

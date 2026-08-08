@@ -1,0 +1,17 @@
+/target/
+/.target-apfs
+node_modules/
+dist/
+/.idea/
+/.vscode/
+.DS_Store
+._*
+__pycache__/
+*.py[cod]
+*.log
+*.pkarr
+*.sess
+.env
+.env.*
+data/
+downloads/

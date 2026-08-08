@@ -1,0 +1,24 @@
+[package]
+name = "discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = "0.8"
+pubky.workspace = true
+pubky-adapter = { path = "../../crates/pubky-adapter" }
+serde.workspace = true
+serde_json.workspace = true
+swarm-protocol = { path = "../../crates/swarm-protocol" }
+swarm-store = { path = "../../crates/swarm-store" }
+tokio = { workspace = true, features = ["net", "signal"] }
+url.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

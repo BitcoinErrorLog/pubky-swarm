@@ -1,0 +1,24 @@
+[package]
+name = "seeder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dataset-core = { path = "../../crates/dataset-core" }
+dataset-torrent = { path = "../../crates/dataset-torrent" }
+mainline.workspace = true
+mainline-discovery = { path = "../../crates/mainline-discovery" }
+swarm-head = { path = "../../crates/swarm-head" }
+swarm-protocol = { path = "../../crates/swarm-protocol" }
+swarm-store = { path = "../../crates/swarm-store" }
+tokio = { workspace = true, features = ["signal"] }
+torrent-engine = { path = "../../crates/torrent-engine" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

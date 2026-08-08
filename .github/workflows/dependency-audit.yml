@@ -1,0 +1,100 @@
+name: Dependency and license audit
+
+on:
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - "**/Cargo.toml"
+      - apps/desktop/package-lock.json
+      - apps/desktop/package.json
+      - .github/deny.toml
+      - .github/workflows/dependency-audit.yml
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - "**/Cargo.toml"
+      - apps/desktop/package-lock.json
+      - apps/desktop/package.json
+      - .github/deny.toml
+      - .github/workflows/dependency-audit.yml
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  rust:
+    name: Rust advisories, sources, and licenses
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+          fallback: none
+
+      - name: Check dependency policy
+        run: >-
+          cargo deny
+          --manifest-path Cargo.toml
+          --config .github/deny.toml
+          check advisories bans licenses sources
+
+      - name: Audit RustSec advisories
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  frontend:
+    name: Frontend advisories and licenses
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Audit production licenses
+        run: >-
+          npx --yes license-checker-rseidelsohn@5.0.1
+          --production
+          --onlyAllow
+          "0BSD;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;LGPL-3.0-or-later;MIT;MPL-2.0"

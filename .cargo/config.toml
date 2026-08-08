@@ -1,0 +1,6 @@
+[build]
+target-dir = ".target-apfs/target"
+
+[env]
+COPYFILE_DISABLE = "1"
+CARGO_INCREMENTAL = "0"
