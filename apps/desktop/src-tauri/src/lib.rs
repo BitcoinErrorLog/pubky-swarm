@@ -1048,8 +1048,8 @@ async fn fetch_external_catalog(
     } else {
         limit
     };
-    let mut items =
-        parse_catalog(source.id, &source.name, &body, parse_limit).map_err(display_error)?;
+    let mut items = parse_catalog(source.id, &source.name, source.kind, &body, parse_limit)
+        .map_err(display_error)?;
     if source.kind == SourceKind::Rss && !query.is_empty() {
         let query = query.to_lowercase();
         items.retain(|item| catalog_item_matches(item, &query));
@@ -1094,18 +1094,13 @@ fn normalize_catalog_tags(values: Vec<String>) -> Result<Vec<String>, String> {
         return Err("enter at least one tag".to_owned());
     }
     if tags.iter().any(|tag| {
-        tag.chars().count() > 64
+        tag.len() > 32
             || tag.chars().any(char::is_control)
             || !tag.chars().all(|character| {
-                character.is_ascii_lowercase()
-                    || character.is_ascii_digit()
-                    || matches!(character, '-' | '_')
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
             })
     }) {
-        return Err(
-            "tags must use 1..=64 lowercase ASCII letters, digits, hyphens, or underscores"
-                .to_owned(),
-        );
+        return Err("tags must use 1..=32 lowercase ASCII letters, digits, or hyphens".to_owned());
     }
     Ok(tags)
 }
@@ -1442,6 +1437,8 @@ mod tests {
             vec!["public-domain", "research"]
         );
         assert!(normalize_catalog_tags(vec!["not valid".to_owned()]).is_err());
+        assert!(normalize_catalog_tags(vec!["not_valid".to_owned()]).is_err());
+        assert!(normalize_catalog_tags(vec!["x".repeat(33)]).is_err());
         assert!(normalize_catalog_tags(Vec::new()).is_err());
     }
 
@@ -1467,6 +1464,9 @@ mod tests {
             size: Some(42),
             tags: vec!["dataset".to_owned()],
             details_url: None,
+            non_authoritative: true,
+            client_validation_required: true,
+            provenance: catalog_client::CatalogProvenance::RssHint,
         };
         assert!(catalog_item_matches(&item, "research"));
         assert!(catalog_item_matches(&item, "dataset"));

@@ -64,7 +64,9 @@ candidates. Source configuration is persisted in `swarm-store`; API keys remain
 in process memory. Searches fetch at most four sources concurrently, cap each
 response at 4 MiB, normalize at most 100 actionable results, and deduplicate by
 infohash. Selecting a result fills the existing magnet form rather than starting
-a transfer.
+a transfer. Each result carries an explicit RSS/Torznab hint provenance. It does
+not become a `PublicCatalogImport` until user-approved torrent retrieval supplies
+authenticated info-dictionary privacy metadata.
 
 User-authored tags are separate `TagClaimV1` artifacts. The desktop synchronizes
 the publisher's existing claims, advances the issuer revision, writes each claim

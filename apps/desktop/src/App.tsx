@@ -1289,7 +1289,10 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
                   <header>
                     <div>
                       <strong>{item.title}</strong>
-                      <span>{item.sourceName}{item.size ? ` · ${formatBytes(item.size)}` : ""}</span>
+                      <span>
+                        {item.sourceName} · {item.provenance === "rss_hint" ? "RSS hint" : "Torznab hint"}
+                        {item.size ? ` · ${formatBytes(item.size)}` : ""}
+                      </span>
                     </div>
                     <button className="primary" onClick={() => onPrepareExternalMagnet(item)}>
                       Add magnet

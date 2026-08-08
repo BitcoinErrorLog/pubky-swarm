@@ -116,6 +116,9 @@ export type ExternalCatalogItem = {
   size: number | null;
   tags: string[];
   detailsUrl: string | null;
+  nonAuthoritative: boolean;
+  clientValidationRequired: boolean;
+  provenance: "rss_hint" | "torznab_hint";
 };
 
 export type CatalogSourceFailure = {

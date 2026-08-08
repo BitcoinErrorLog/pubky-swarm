@@ -53,8 +53,10 @@ External catalog responses are capped at 4 MiB and 100 actionable entries.
 Remote sources require HTTPS; loopback HTTP is allowed for local Prowlarr or
 Jackett. URL credentials, fragments, sensitive credential query parameters,
 explicit non-loopback IP literals, and HTTP redirects are rejected. At most four
-sources are fetched concurrently. Request failures remove request URLs before
-they reach the UI so Torznab API keys are not disclosed in errors.
+sources are fetched concurrently. XML document types, unknown entities, nesting
+beyond 32 elements, and Torznab error documents are rejected. Request failures
+remove request URLs before they reach the UI so Torznab API keys are not
+disclosed in errors.
 
 ## Playback
 

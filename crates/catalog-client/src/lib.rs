@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesRef, BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -26,6 +26,16 @@ pub enum SourceKind {
     Rss,
     /// Torznab-compatible search endpoint.
     Torznab,
+}
+
+/// Explicit trust boundary attached to one external result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogProvenance {
+    /// Unauthenticated RSS feed observation.
+    RssHint,
+    /// Unauthenticated Torznab indexer observation.
+    TorznabHint,
 }
 
 impl Display for SourceKind {
@@ -71,6 +81,12 @@ pub struct CatalogItem {
     pub tags: Vec<String>,
     /// Credential-free details page when supplied.
     pub details_url: Option<String>,
+    /// External catalog results never establish publisher authority.
+    pub non_authoritative: bool,
+    /// The client must validate torrent metadata after user-approved import.
+    pub client_validation_required: bool,
+    /// Transport-specific trust boundary.
+    pub provenance: CatalogProvenance,
 }
 
 /// Catalog parsing or validation failure.
@@ -192,10 +208,12 @@ pub fn torznab_search_url(
 ///
 /// # Errors
 ///
-/// Returns [`Error::Xml`] when the document is not well-formed XML.
+/// Returns [`Error::Xml`] for malformed XML, Torznab error documents, document
+/// type declarations, or nesting beyond 32 elements.
 pub fn parse_catalog(
     source_id: i64,
     source_name: &str,
+    source_kind: SourceKind,
     xml: &[u8],
     limit: usize,
 ) -> Result<Vec<CatalogItem>, Error> {
@@ -204,13 +222,20 @@ pub fn parse_catalog(
     let mut results = Vec::new();
     let mut item = None::<ItemBuilder>;
     let mut field = Field::None;
+    let mut depth = 0_usize;
 
     loop {
         match reader.read_event() {
             Ok(Event::Start(start)) => {
+                depth = depth.saturating_add(1);
+                if depth > 32 {
+                    return Err(Error::Xml("catalog XML exceeds depth 32".to_owned()));
+                }
                 let local = start.local_name();
                 let name = local.as_ref();
-                if name == b"item" {
+                if name == b"error" {
+                    return Err(catalog_error(&reader, &start)?);
+                } else if name == b"item" {
                     item = Some(ItemBuilder::default());
                     field = Field::None;
                 } else if item.is_some() {
@@ -225,10 +250,17 @@ pub fn parse_catalog(
             Ok(Event::Empty(start)) if item.is_some() => {
                 let local = start.local_name();
                 let name = local.as_ref();
-                if name == b"enclosure" {
+                if name == b"error" {
+                    return Err(catalog_error(&reader, &start)?);
+                } else if name == b"enclosure" {
                     apply_enclosure(&reader, &start, current_item(&mut item)?)?;
                 } else if name == b"attr" {
                     apply_torznab_attribute(&reader, &start, current_item(&mut item)?)?;
+                }
+            }
+            Ok(Event::Empty(start)) => {
+                if start.local_name().as_ref() == b"error" {
+                    return Err(catalog_error(&reader, &start)?);
                 }
             }
             Ok(Event::Text(text)) if item.is_some() => {
@@ -244,36 +276,14 @@ pub fn parse_catalog(
                 apply_text(current_item(&mut item)?, field, &value);
             }
             Ok(Event::GeneralRef(reference)) if item.is_some() => {
-                let value = if let Some(character) = reference
-                    .resolve_char_ref()
-                    .map_err(|error| Error::Xml(error.to_string()))?
-                {
-                    character.to_string()
-                } else {
-                    let name = reference
-                        .decode()
-                        .map_err(|error| Error::Xml(error.to_string()))?;
-                    match name.as_ref() {
-                        "lt" => "<",
-                        "gt" => ">",
-                        "amp" => "&",
-                        "apos" => "'",
-                        "quot" => "\"",
-                        _ => {
-                            return Err(Error::Xml(format!(
-                                "unsupported entity reference &{name};"
-                            )));
-                        }
-                    }
-                    .to_owned()
-                };
+                let value = resolve_reference(&reference)?;
                 apply_text(current_item(&mut item)?, field, &value);
             }
             Ok(Event::End(end)) => {
                 let name = end.local_name();
                 if name.as_ref() == b"item" {
                     if let Some(candidate) = item.take()
-                        && let Some(result) = candidate.finish(source_id, source_name)
+                        && let Some(result) = candidate.finish(source_id, source_name, source_kind)
                     {
                         results.push(result);
                         if results.len() >= limit.clamp(1, MAX_RESULTS) {
@@ -284,6 +294,12 @@ pub fn parse_catalog(
                 } else if item.is_some() && Field::from_name(name.as_ref()) == field {
                     field = Field::None;
                 }
+                depth = depth.saturating_sub(1);
+            }
+            Ok(Event::DocType(_)) => {
+                return Err(Error::Xml(
+                    "document type declarations are not allowed".to_owned(),
+                ));
             }
             Ok(Event::Eof) => break,
             Ok(_) => {}
@@ -296,6 +312,49 @@ pub fn parse_catalog(
 fn current_item(item: &mut Option<ItemBuilder>) -> Result<&mut ItemBuilder, Error> {
     item.as_mut()
         .ok_or_else(|| Error::Xml("item parser state was lost".to_owned()))
+}
+
+fn resolve_reference(reference: &BytesRef<'_>) -> Result<String, Error> {
+    if let Some(character) = reference
+        .resolve_char_ref()
+        .map_err(|error| Error::Xml(error.to_string()))?
+    {
+        return Ok(character.to_string());
+    }
+    let name = reference
+        .decode()
+        .map_err(|error| Error::Xml(error.to_string()))?;
+    match name.as_ref() {
+        "lt" => Ok("<".to_owned()),
+        "gt" => Ok(">".to_owned()),
+        "amp" => Ok("&".to_owned()),
+        "apos" => Ok("'".to_owned()),
+        "quot" => Ok("\"".to_owned()),
+        _ => Err(Error::Xml(format!("unsupported entity reference &{name};"))),
+    }
+}
+
+fn catalog_error(reader: &Reader<&[u8]>, element: &BytesStart<'_>) -> Result<Error, Error> {
+    let mut code = None;
+    let mut description = None;
+    for attribute in element.attributes().with_checks(false) {
+        let attribute = attribute.map_err(|error| Error::Xml(error.to_string()))?;
+        let value = attribute
+            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+            .map_err(|error| Error::Xml(error.to_string()))?;
+        match attribute.key.local_name().as_ref() {
+            b"code" => code = Some(truncate_chars(&value, 64)),
+            b"description" => description = Some(truncate_chars(&value, 512)),
+            _ => {}
+        }
+    }
+    let detail = match (code, description) {
+        (Some(code), Some(description)) => format!(" {code}: {description}"),
+        (Some(code), None) => format!(" {code}"),
+        (None, Some(description)) => format!(": {description}"),
+        (None, None) => String::new(),
+    };
+    Ok(Error::Xml(format!("catalog reported an error{detail}")))
 }
 
 fn is_loopback_host(url: &Url) -> bool {
@@ -345,11 +404,17 @@ struct ItemBuilder {
     magnet: String,
     info_hash: String,
     size: Option<u64>,
+    enclosure_size: Option<u64>,
     tags: Vec<String>,
 }
 
 impl ItemBuilder {
-    fn finish(self, source_id: i64, source_name: &str) -> Option<CatalogItem> {
+    fn finish(
+        self,
+        source_id: i64,
+        source_name: &str,
+        source_kind: SourceKind,
+    ) -> Option<CatalogItem> {
         let info_hash = normalize_info_hash(&self.info_hash)
             .or_else(|| magnet_info_hash(&self.magnet))
             .or_else(|| magnet_info_hash(&self.enclosure))
@@ -389,9 +454,15 @@ impl ItemBuilder {
             description: truncate_chars(self.description.trim(), 4_000),
             magnet,
             info_hash,
-            size: self.size,
+            size: self.size.or(self.enclosure_size),
             tags,
             details_url,
+            non_authoritative: true,
+            client_validation_required: true,
+            provenance: match source_kind {
+                SourceKind::Rss => CatalogProvenance::RssHint,
+                SourceKind::Torznab => CatalogProvenance::TorznabHint,
+            },
         })
     }
 }
@@ -429,8 +500,12 @@ fn apply_enclosure(
             .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
             .map_err(|error| Error::Xml(error.to_string()))?;
         match name.as_ref() {
-            b"url" => item.enclosure = truncate_chars(&value, 8_192),
-            b"length" if item.size.is_none() => item.size = value.parse().ok(),
+            b"url" if item.enclosure.is_empty() || value.starts_with("magnet:?") => {
+                item.enclosure = truncate_chars(&value, 8_192);
+            }
+            b"length" if item.enclosure_size.is_none() => {
+                item.enclosure_size = value.parse().ok();
+            }
             _ => {}
         }
     }
@@ -461,7 +536,7 @@ fn apply_torznab_attribute(
     match name.to_ascii_lowercase().as_str() {
         "magneturl" => item.magnet = truncate_chars(&value, 8_192),
         "infohash" => item.info_hash = truncate_chars(&value, 64),
-        "size" if item.size.is_none() => item.size = value.parse().ok(),
+        "size" => item.size = value.parse().ok(),
         "tag" | "category" if item.tags.len() < 64 => {
             item.tags.push(truncate_chars(&value, 100));
         }
@@ -560,13 +635,15 @@ mod tests {
               </item></channel>
             </rss>"#
         );
-        let items = parse_catalog(1, "Academic Torrents", xml.as_bytes(), 25).unwrap();
+        let items =
+            parse_catalog(1, "Academic Torrents", SourceKind::Rss, xml.as_bytes(), 25).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "Research & Data");
         assert_eq!(items[0].info_hash.as_deref(), Some(HASH));
         assert_eq!(items[0].size, Some(42));
         assert_eq!(items[0].tags, vec!["dataset"]);
         assert!(items[0].magnet.contains(HASH));
+        assert_eq!(items[0].provenance, CatalogProvenance::RssHint);
     }
 
     #[test]
@@ -577,6 +654,7 @@ mod tests {
               <channel><item>
                 <title>Open Film</title>
                 <description><![CDATA[A public-domain film]]></description>
+                <enclosure url="https://indexer.example/download/1.torrent" length="1" type="application/x-bittorrent" />
                 <torznab:attr name="infohash" value="{HASH}" />
                 <torznab:attr name="magneturl" value="magnet:?xt=urn:btih:{HASH}&amp;dn=Open%20Film" />
                 <torznab:attr name="size" value="1024" />
@@ -584,16 +662,39 @@ mod tests {
               </item></channel>
             </rss>"#
         );
-        let items = parse_catalog(2, "Local Torznab", xml.as_bytes(), 1).unwrap();
+        let items =
+            parse_catalog(2, "Local Torznab", SourceKind::Torznab, xml.as_bytes(), 1).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].size, Some(1_024));
         assert_eq!(items[0].tags, vec!["film"]);
         assert_eq!(items[0].info_hash.as_deref(), Some(HASH));
+        assert_eq!(items[0].provenance, CatalogProvenance::TorznabHint);
+        assert!(items[0].non_authoritative);
+        assert!(items[0].client_validation_required);
     }
 
     #[test]
     fn omits_non_actionable_items() {
         let xml = br"<rss><channel><item><title>No torrent</title></item></channel></rss>";
-        assert!(parse_catalog(1, "feed", xml, 10).unwrap().is_empty());
+        assert!(
+            parse_catalog(1, "feed", SourceKind::Rss, xml, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rejects_torznab_errors_doctypes_and_excessive_depth() {
+        let error = br#"<error code="100" description="Incorrect API key" />"#;
+        assert!(
+            parse_catalog(1, "feed", SourceKind::Torznab, error, 10)
+                .unwrap_err()
+                .to_string()
+                .contains("Incorrect API key")
+        );
+        let doctype = br"<!DOCTYPE rss><rss />";
+        assert!(parse_catalog(1, "feed", SourceKind::Rss, doctype, 10).is_err());
+        let nested = format!("{}{}", "<a>".repeat(33), "</a>".repeat(33));
+        assert!(parse_catalog(1, "feed", SourceKind::Rss, nested.as_bytes(), 10).is_err());
     }
 }
