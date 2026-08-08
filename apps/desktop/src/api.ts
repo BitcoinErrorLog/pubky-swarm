@@ -20,6 +20,7 @@ export const api = {
   startAuth: () => invoke<AuthStart>("start_auth"),
   pollAuth: () => invoke<AuthStatus>("poll_auth"),
   authStatus: () => invoke<AuthStatus>("get_auth_status"),
+  takePendingMagnet: () => invoke<string | null>("take_pending_magnet"),
   profile: (user: string) => invoke<Profile>("get_profile", { user }),
   releases: (user: string) =>
     invoke<ReleaseV1[]>("list_releases", { user }),

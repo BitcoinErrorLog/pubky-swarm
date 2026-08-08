@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { isMagnet } from "./App";
 
 const apiMock = vi.hoisted(() => ({
   authStatus: vi.fn(),
+  takePendingMagnet: vi.fn(),
   followed: vi.fn(),
   qbittorrentStatus: vi.fn(),
   torrents: vi.fn(),
@@ -18,11 +19,16 @@ const apiMock = vi.hoisted(() => ({
   publishCatalogTags: vi.fn(),
 }));
 
-vi.mock("./api", () => ({ api: apiMock }));
-vi.mock("@tauri-apps/plugin-deep-link", () => ({
-  getCurrent: vi.fn().mockResolvedValue(null),
-  onOpenUrl: vi.fn().mockResolvedValue(() => undefined),
+const eventMock = vi.hoisted(() => ({
+  callbacks: [] as Array<() => void>,
+  listen: vi.fn((_event: string, callback: () => void) => {
+    eventMock.callbacks.push(callback);
+    return Promise.resolve(() => undefined);
+  }),
 }));
+
+vi.mock("./api", () => ({ api: apiMock }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: eventMock.listen }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn().mockResolvedValue(null),
 }));
@@ -51,7 +57,9 @@ function externalResult() {
 }
 
 beforeEach(() => {
+  window.focus = vi.fn();
   apiMock.authStatus.mockResolvedValue({ authenticated: false, user: null });
+  apiMock.takePendingMagnet.mockResolvedValue(null);
   apiMock.followed.mockResolvedValue([]);
   apiMock.qbittorrentStatus.mockResolvedValue({ connected: false, version: null });
   apiMock.torrents.mockResolvedValue([]);
@@ -90,6 +98,7 @@ beforeEach(() => {
     files: [],
   });
   apiMock.publishCatalogTags.mockResolvedValue(["public-domain", "research"]);
+  eventMock.callbacks.length = 0;
 });
 
 afterEach(() => {
@@ -107,6 +116,26 @@ describe("magnet validation", () => {
 });
 
 describe("external catalog workflow", () => {
+  it("consumes a cold-start browser magnet from the Rust handoff", async () => {
+    apiMock.takePendingMagnet.mockResolvedValueOnce(magnet);
+    render(<App />);
+
+    expect(await screen.findByLabelText("Magnet link")).toHaveValue(magnet);
+    expect(apiMock.takePendingMagnet).toHaveBeenCalled();
+  });
+
+  it("consumes a browser magnet while the app is already running", async () => {
+    render(<App />);
+    await waitFor(() => expect(eventMock.callbacks).toHaveLength(1));
+    apiMock.takePendingMagnet.mockResolvedValueOnce(magnet);
+
+    await act(async () => {
+      eventMock.callbacks[0]();
+    });
+
+    expect(await screen.findByLabelText("Magnet link")).toHaveValue(magnet);
+  });
+
   it("moves a catalog magnet into Library and submits it to the backend", async () => {
     const user = userEvent.setup();
     render(<App />);

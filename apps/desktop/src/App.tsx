@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
@@ -118,32 +118,32 @@ function App() {
   useEffect(() => {
     let active = true;
     let stopListening: (() => void) | undefined;
-    const receiveMagnet = (urls: string[]) => {
-      const value = urls.find(isMagnet);
-      if (!value) return;
+    const receivePendingMagnet = async () => {
+      const value = await api.takePendingMagnet();
+      if (!active || !value) return;
       setMagnet(value);
       setView("library");
       setError(null);
       window.focus();
     };
 
-    void getCurrent()
-      .then((urls) => {
-        if (active && urls) receiveMagnet(urls);
-      })
-      .catch((reason) => {
+    void listen("pubky-swarm-magnet-opened", () => {
+      void receivePendingMagnet().catch((reason) => {
         if (active) setError(`Could not read the incoming magnet link: ${errorMessage(reason)}`);
       });
-    void onOpenUrl(receiveMagnet)
+    })
       .then((unlisten) => {
         if (active) {
           stopListening = unlisten;
+          void receivePendingMagnet().catch((reason) => {
+            if (active) setError(`Could not read the incoming magnet link: ${errorMessage(reason)}`);
+          });
         } else {
           unlisten();
         }
       })
       .catch((reason) => {
-        if (active) setError(`Could not listen for magnet links: ${errorMessage(reason)}`);
+        if (active) setError(`Could not initialize magnet handling: ${errorMessage(reason)}`);
       });
 
     return () => {

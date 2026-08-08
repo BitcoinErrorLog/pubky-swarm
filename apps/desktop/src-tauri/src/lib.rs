@@ -26,7 +26,8 @@ use swarm_protocol::{
     TagOperation, TorrentRef, TorrentV1,
 };
 use swarm_store::{CatalogSource, Store};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tokio::io::AsyncReadExt;
 use tokio::sync::{Mutex, RwLock};
 use torrent_engine::{
@@ -36,6 +37,7 @@ use url::Url;
 
 const MAINLINE_IMPORT_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXTERNAL_CATALOG_CONCURRENCY: usize = 4;
+const MAGNET_OPENED_EVENT: &str = "pubky-swarm-magnet-opened";
 
 struct AppState {
     adapter: PubkyAdapter,
@@ -48,7 +50,8 @@ struct AppState {
     qbittorrent: RwLock<Option<Arc<QbittorrentClient>>>,
     catalog_api_keys: RwLock<HashMap<i64, String>>,
     tag_publish_lock: Mutex<()>,
-    catalog_url: Url,
+    pending_magnet: std::sync::Mutex<Option<String>>,
+    catalog_url: Option<Url>,
     http: reqwest::Client,
 }
 
@@ -264,6 +267,16 @@ async fn get_auth_status(state: State<'_, AppState>) -> Result<AuthStatus, Strin
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri command injection requires owned State.
+fn take_pending_magnet(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    state
+        .pending_magnet
+        .lock()
+        .map_err(|_| "pending magnet lock poisoned".to_owned())
+        .map(|mut pending| pending.take())
+}
+
+#[tauri::command]
 async fn get_profile(user: String, state: State<'_, AppState>) -> Result<ProfileResponse, String> {
     let user = PublicKey::try_from(user.as_str()).map_err(display_error)?;
     let profile: ProfileResponse = state
@@ -310,7 +323,10 @@ async fn search_catalog(
     if query.chars().count() > 256 {
         return Err("catalog query exceeds 256 characters".to_owned());
     }
-    let endpoint = state.catalog_url.join("v1/search").map_err(display_error)?;
+    let Some(catalog_url) = &state.catalog_url else {
+        return Ok(Vec::new());
+    };
+    let endpoint = catalog_url.join("v1/search").map_err(display_error)?;
     let response = state
         .http
         .get(endpoint)
@@ -1289,7 +1305,50 @@ fn display_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-#[cfg(desktop)]
+fn configured_catalog_url() -> Result<Option<Url>, Box<dyn std::error::Error>> {
+    let value = match std::env::var("PUBKY_SWARM_DISCOVERY_URL") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut url = Url::parse(&value)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "PUBKY_SWARM_DISCOVERY_URL must be a credential-free HTTP(S) base URL",
+        )
+        .into());
+    }
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    Ok(Some(url))
+}
+
+fn first_valid_magnet(urls: Vec<Url>) -> Option<String> {
+    urls.into_iter().find_map(|url| {
+        (url.scheme() == "magnet" && magnet_v1_info_hash(url.as_str()).ok().flatten().is_some())
+            .then(|| url.to_string())
+    })
+}
+
+fn queue_opened_magnets(app: &tauri::AppHandle, urls: Vec<Url>) {
+    let Some(magnet) = first_valid_magnet(urls) else {
+        return;
+    };
+    let state = app.state::<AppState>();
+    if let Ok(mut pending) = state.pending_magnet.lock() {
+        *pending = Some(magnet);
+        let _ = app.emit(MAGNET_OPENED_EVENT, ());
+        focus_main_window(app);
+    }
+}
+
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -1342,23 +1401,7 @@ pub fn run() {
             let discovery = PeerDiscovery::new(Dht::client()?.as_async());
             let adapter = PubkyAdapter::mainnet()?;
             let store = Store::open(data_dir.join("swarm.sqlite3"))?;
-            let mut catalog_url = Url::parse(
-                &std::env::var("PUBKY_SWARM_DISCOVERY_URL")
-                    .unwrap_or_else(|_| "http://127.0.0.1:7780/".to_owned()),
-            )?;
-            if !matches!(catalog_url.scheme(), "http" | "https")
-                || !catalog_url.username().is_empty()
-                || catalog_url.password().is_some()
-                || catalog_url.query().is_some()
-                || catalog_url.fragment().is_some()
-            {
-                return Err(
-                    "PUBKY_SWARM_DISCOVERY_URL must be a credential-free HTTP(S) base URL".into(),
-                );
-            }
-            if !catalog_url.path().ends_with('/') {
-                catalog_url.set_path(&format!("{}/", catalog_url.path()));
-            }
+            let catalog_url = configured_catalog_url()?;
             app.manage(AppState {
                 adapter,
                 engine,
@@ -1370,15 +1413,23 @@ pub fn run() {
                 qbittorrent: RwLock::new(None),
                 catalog_api_keys: RwLock::new(HashMap::new()),
                 tag_publish_lock: Mutex::new(()),
+                pending_magnet: std::sync::Mutex::new(None),
                 catalog_url,
                 http: http_client()?,
             });
+            let handle = app.handle().clone();
+            app.deep_link()
+                .on_open_url(move |event| queue_opened_magnets(&handle, event.urls()));
+            if let Some(urls) = app.deep_link().get_current()? {
+                queue_opened_magnets(app.handle(), urls);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             start_auth,
             poll_auth,
             get_auth_status,
+            take_pending_magnet,
             get_profile,
             list_releases,
             search_catalog,
@@ -1450,6 +1501,21 @@ mod tests {
         );
         assert_eq!(normalize_api_key(Some(" ".to_owned())).unwrap(), None);
         assert!(normalize_api_key(Some("x".repeat(513))).is_err());
+    }
+
+    #[test]
+    fn native_deep_link_boundary_accepts_only_valid_btih_magnets() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            first_valid_magnet(vec![
+                Url::parse("https://example.com/not-a-magnet").unwrap(),
+                Url::parse(&format!("magnet:?xt=urn:btih:{hash}&dn=Shared")).unwrap(),
+            ]),
+            Some(format!("magnet:?xt=urn:btih:{hash}&dn=Shared"))
+        );
+        assert!(
+            first_valid_magnet(vec![Url::parse("magnet:?dn=missing-infohash").unwrap()]).is_none()
+        );
     }
 
     #[test]

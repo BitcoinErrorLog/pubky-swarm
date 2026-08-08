@@ -13,6 +13,11 @@ External results are hints: adding a result only fills the magnet import form.
 Authenticated users can publish their own tags under the scoped Pubky
 tag-claims namespace.
 
+The optional Pubky discovery service is queried only when
+`PUBKY_SWARM_DISCOVERY_URL` is set. Leaving it unset uses the built-in and
+user-configured external catalogs without producing a localhost connection
+error.
+
 ```bash
 npm install
 npm run build
