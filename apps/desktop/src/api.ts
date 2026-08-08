@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AuthStart,
   AuthStatus,
+  AddExternalCatalogSourceRequest,
   CreateReleaseRequest,
+  ExternalCatalogSearchResponse,
+  ExternalCatalogSource,
   ImportMagnetRequest,
   ImportTorrentFileRequest,
   Profile,
@@ -22,6 +25,28 @@ export const api = {
     invoke<ReleaseV1[]>("list_releases", { user }),
   searchCatalog: (query: string, limit = 25) =>
     invoke<ReleaseV1[]>("search_catalog", { query, limit }),
+  externalCatalogSources: () =>
+    invoke<ExternalCatalogSource[]>("list_external_catalog_sources"),
+  addExternalCatalogSource: (request: AddExternalCatalogSourceRequest) =>
+    invoke<ExternalCatalogSource>("add_external_catalog_source", { request }),
+  setExternalCatalogSourceEnabled: (sourceId: number, enabled: boolean) =>
+    invoke<void>("set_external_catalog_source_enabled", { sourceId, enabled }),
+  setExternalCatalogApiKey: (sourceId: number, apiKey?: string) =>
+    invoke<ExternalCatalogSource>("set_external_catalog_api_key", {
+      sourceId,
+      apiKey: apiKey ?? null,
+    }),
+  removeExternalCatalogSource: (sourceId: number) =>
+    invoke<void>("remove_external_catalog_source", { sourceId }),
+  searchExternalCatalogs: (query: string, limit = 50) =>
+    invoke<ExternalCatalogSearchResponse>("search_external_catalogs", {
+      query,
+      limit,
+    }),
+  publishCatalogTags: (infoHash: string, tags: string[]) =>
+    invoke<string[]>("publish_catalog_tags", {
+      request: { infoHash, tags },
+    }),
   follow: (user: string) =>
     invoke<string[]>("follow_publisher", { user }),
   followed: () => invoke<string[]>("list_followed"),

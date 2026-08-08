@@ -11,10 +11,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use swarm_protocol::{PublisherId, ReleaseV1};
 
 mod catalog;
+mod sources;
 
 pub use catalog::BlocklistSubscription;
+pub use sources::CatalogSource;
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// Persistent cache failures.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +45,18 @@ pub enum Error {
     /// Signed authority sequences are positive.
     #[error("invalid authority sequence 0")]
     InvalidAuthoritySequence,
+    /// Catalog source name is invalid.
+    #[error("catalog source name must contain 1..=100 non-control characters")]
+    InvalidCatalogName,
+    /// Local source count reached the enforced bound.
+    #[error("catalog source limit of 32 reached")]
+    CatalogSourceLimit,
+    /// Built-in catalog sources can be disabled but not deleted.
+    #[error("built-in catalog sources cannot be deleted")]
+    BuiltInCatalogSource,
+    /// Catalog source endpoint or kind is invalid.
+    #[error(transparent)]
+    Catalog(#[from] catalog_client::Error),
     /// On-disk schema was created by a newer unsupported application.
     #[error("unsupported store schema {found}; maximum supported is {supported}")]
     UnsupportedSchema {
@@ -282,6 +296,10 @@ fn migrate(connection: &mut Connection) -> Result<()> {
     }
     if version == 1 {
         migrate_v2(connection)?;
+        version = 2;
+    }
+    if version == 2 {
+        migrate_v3(connection)?;
     }
     Ok(())
 }
@@ -386,6 +404,36 @@ fn migrate_v2(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v3(connection: &mut Connection) -> Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE catalog_sources (
+             source_id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 100),
+             kind TEXT NOT NULL CHECK (kind IN ('rss', 'torznab')),
+             endpoint TEXT UNIQUE NOT NULL CHECK (length(endpoint) BETWEEN 1 AND 2048),
+             enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+             built_in INTEGER NOT NULL CHECK (built_in IN (0, 1)),
+             requires_api_key INTEGER NOT NULL CHECK (requires_api_key IN (0, 1)),
+             added_at INTEGER NOT NULL CHECK (added_at > 0)
+         );
+         INSERT INTO catalog_sources
+             (name, kind, endpoint, enabled, built_in, requires_api_key, added_at)
+         VALUES (
+             'Academic Torrents — Recent',
+             'rss',
+             'https://academictorrents.com/rss.xml',
+             1,
+             1,
+             0,
+             1
+         );
+         PRAGMA user_version = 3;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn unix_millis() -> Result<u64> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -433,7 +481,7 @@ mod tests {
         let bob = publisher(2);
         {
             let store = Store::open(&path).unwrap();
-            assert_eq!(store.schema_version().unwrap(), 2);
+            assert_eq!(store.schema_version().unwrap(), 3);
             store.follow(&alice).unwrap();
             store.follow(&bob).unwrap();
             store.set_cursor(&alice, 42).unwrap();
@@ -464,7 +512,7 @@ mod tests {
             Store::from_connection(connection),
             Err(Error::UnsupportedSchema {
                 found: 99,
-                supported: 2
+                supported: 3
             })
         ));
     }
@@ -528,7 +576,7 @@ mod tests {
 
         migrate(&mut connection).unwrap();
         let store = Store::from_connection(connection).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 2);
+        assert_eq!(store.schema_version().unwrap(), 3);
         assert_eq!(store.followed_publishers().unwrap(), vec![alice.clone()]);
         assert_eq!(store.cursor(&alice).unwrap(), Some(99));
         assert_eq!(store.releases_for(&alice).unwrap(), vec![cached]);

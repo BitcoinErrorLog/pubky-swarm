@@ -62,6 +62,21 @@ impl Store {
         )
     }
 
+    /// Return the highest cached tag-claim revision for an issuer.
+    ///
+    /// # Errors
+    ///
+    /// Returns lock or `SQLite` errors.
+    pub fn highest_tag_claim_revision(&self, issuer: &PublisherId) -> Result<Option<u64>> {
+        self.connection()?
+            .query_row(
+                "SELECT MAX(revision) FROM tag_claims WHERE issuer = ?1",
+                [issuer.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(Error::from)
+    }
+
     /// Cache a validated collection snapshot.
     ///
     /// # Errors
@@ -453,6 +468,7 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(store.highest_tag_claim_revision(&alice).unwrap(), None);
         store.cache_tag_claim(&claim).unwrap();
         store.cache_tag_claim(&claim).unwrap();
         store.cache_collection(&collection).unwrap();
@@ -461,6 +477,7 @@ mod tests {
         store.cache_blocklist(&blocklist).unwrap();
 
         assert_eq!(store.tag_claims_for(&target).unwrap(), vec![claim]);
+        assert_eq!(store.highest_tag_claim_revision(&alice).unwrap(), Some(1));
         assert_eq!(
             store.collection(collection.id()).unwrap(),
             Some(collection.clone())

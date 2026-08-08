@@ -84,6 +84,51 @@ export type ImportTorrentFileRequest = ImportTorrentRequest & {
   torrentPath: string;
 };
 
+export type CatalogSourceKind = "rss" | "torznab";
+
+export type ExternalCatalogSource = {
+  id: number;
+  name: string;
+  kind: CatalogSourceKind;
+  endpoint: string;
+  enabled: boolean;
+  builtIn: boolean;
+  requiresApiKey: boolean;
+  addedAt: number;
+  hasApiKey: boolean;
+};
+
+export type AddExternalCatalogSourceRequest = {
+  name: string;
+  kind: CatalogSourceKind;
+  endpoint: string;
+  requiresApiKey: boolean;
+  apiKey?: string;
+};
+
+export type ExternalCatalogItem = {
+  sourceId: number;
+  sourceName: string;
+  title: string;
+  description: string;
+  magnet: string;
+  infoHash: string | null;
+  size: number | null;
+  tags: string[];
+  detailsUrl: string | null;
+};
+
+export type CatalogSourceFailure = {
+  sourceId: number;
+  sourceName: string;
+  message: string;
+};
+
+export type ExternalCatalogSearchResponse = {
+  results: ExternalCatalogItem[];
+  errors: CatalogSourceFailure[];
+};
+
 export type QbittorrentStatus = {
   connected: boolean;
   version: string | null;

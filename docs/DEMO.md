@@ -16,6 +16,21 @@ npm run tauri dev
 6. Resolve payload peers through Mainline and download.
 7. Play supported media through the seekable loopback Range server.
 
+## External catalogs and tagging
+
+1. Open Discover. The built-in Academic Torrents recent feed is already
+   enabled.
+2. Optionally add a credential-free RSS endpoint, or a Torznab endpoint from a
+   local Jackett/Prowlarr instance. Enter its API key separately; it is held only
+   for the current app session.
+3. Search enabled catalogs. One unavailable source does not discard successful
+   results from other sources.
+4. Select **Add magnet**. Confirm the populated magnet in Library to begin the
+   transfer.
+5. Authorize Pubky and enter normalized tags on a result with a v1 infohash.
+   **Publish tags** writes issuer-attributed tag claims without treating source
+   categories as authenticated facts.
+
 ## Origin-independent dataset proof
 
 The automated proof uses only generated local content:

@@ -6,6 +6,10 @@ import { api } from "./api";
 import appIcon from "../app-icon.png";
 import type {
   AuthStatus,
+  CatalogSourceFailure,
+  CatalogSourceKind,
+  ExternalCatalogItem,
+  ExternalCatalogSource,
   Profile,
   QbittorrentStatus,
   QbittorrentTorrent,
@@ -45,6 +49,17 @@ function App() {
   const [publisher, setPublisher] = useState("");
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogResults, setCatalogResults] = useState<ReleaseV1[]>([]);
+  const [externalSources, setExternalSources] = useState<ExternalCatalogSource[]>([]);
+  const [externalResults, setExternalResults] = useState<ExternalCatalogItem[]>([]);
+  const [externalFailures, setExternalFailures] = useState<CatalogSourceFailure[]>([]);
+  const [catalogSourceName, setCatalogSourceName] = useState("");
+  const [catalogSourceKind, setCatalogSourceKind] = useState<CatalogSourceKind>("rss");
+  const [catalogSourceEndpoint, setCatalogSourceEndpoint] = useState("");
+  const [catalogSourceRequiresApiKey, setCatalogSourceRequiresApiKey] = useState(true);
+  const [catalogSourceApiKey, setCatalogSourceApiKey] = useState("");
+  const [catalogApiKeyDrafts, setCatalogApiKeyDrafts] = useState<Record<number, string>>({});
+  const [catalogTagDrafts, setCatalogTagDrafts] = useState<Record<string, string>>({});
+  const [publishedCatalogTags, setPublishedCatalogTags] = useState<Record<string, string[]>>({});
   const [profile, setProfile] = useState<Profile | null>(null);
   const [releases, setReleases] = useState<ReleaseV1[]>([]);
   const [followed, setFollowed] = useState<string[]>([]);
@@ -80,6 +95,14 @@ function App() {
     }
   }, []);
 
+  const refreshExternalSources = useCallback(async (surfaceError = true) => {
+    try {
+      setExternalSources(await api.externalCatalogSources());
+    } catch (reason) {
+      if (surfaceError) setError(errorMessage(reason));
+    }
+  }, []);
+
   useEffect(() => {
     api.authStatus().then(setAuth).catch((reason) => setError(errorMessage(reason)));
     api.followed().then(setFollowed).catch((reason) => setError(errorMessage(reason)));
@@ -87,9 +110,10 @@ function App() {
       setQbittorrent({ connected: false, version: null });
     });
     void refreshTorrents();
+    void refreshExternalSources();
     const interval = window.setInterval(() => void refreshTorrents(false), 2_000);
     return () => window.clearInterval(interval);
-  }, [refreshTorrents]);
+  }, [refreshExternalSources, refreshTorrents]);
 
   useEffect(() => {
     let active = true;
@@ -209,8 +233,99 @@ function App() {
 
   async function searchCatalog(event: FormEvent) {
     event.preventDefault();
-    await run("Searching opt-in Pubky catalogs", async () => {
-      setCatalogResults(await api.searchCatalog(catalogQuery));
+    await run("Searching enabled catalogs", async () => {
+      const [pubky, external] = await Promise.allSettled([
+        api.searchCatalog(catalogQuery),
+        api.searchExternalCatalogs(catalogQuery),
+      ]);
+      setCatalogResults(pubky.status === "fulfilled" ? pubky.value : []);
+      const failures: CatalogSourceFailure[] = [];
+      if (pubky.status === "rejected") {
+        failures.push({
+          sourceId: -2,
+          sourceName: "Pubky discovery service",
+          message: errorMessage(pubky.reason),
+        });
+      }
+      if (external.status === "fulfilled") {
+        setExternalResults(external.value.results);
+        failures.push(...external.value.errors);
+      } else {
+        setExternalResults([]);
+        failures.push({
+          sourceId: -1,
+          sourceName: "External catalogs",
+          message: errorMessage(external.reason),
+        });
+      }
+      setExternalFailures(failures);
+      if (pubky.status === "rejected" && external.status === "rejected") {
+        throw new Error(
+          `Pubky discovery: ${errorMessage(pubky.reason)}. External catalogs: ${errorMessage(external.reason)}`,
+        );
+      }
+    });
+  }
+
+  async function addCatalogSource(event: FormEvent) {
+    event.preventDefault();
+    await run("Adding external catalog", async () => {
+      await api.addExternalCatalogSource({
+        name: catalogSourceName,
+        kind: catalogSourceKind,
+        endpoint: catalogSourceEndpoint,
+        requiresApiKey: catalogSourceKind === "torznab" && catalogSourceRequiresApiKey,
+        ...(catalogSourceApiKey ? { apiKey: catalogSourceApiKey } : {}),
+      });
+      setCatalogSourceName("");
+      setCatalogSourceEndpoint("");
+      setCatalogSourceApiKey("");
+      await refreshExternalSources();
+    });
+  }
+
+  async function toggleCatalogSource(source: ExternalCatalogSource) {
+    await run(`${source.enabled ? "Disabling" : "Enabling"} ${source.name}`, async () => {
+      await api.setExternalCatalogSourceEnabled(source.id, !source.enabled);
+      await refreshExternalSources();
+    });
+  }
+
+  async function removeCatalogSource(source: ExternalCatalogSource) {
+    await run(`Removing ${source.name}`, async () => {
+      await api.removeExternalCatalogSource(source.id);
+      setExternalResults((current) => current.filter((item) => item.sourceId !== source.id));
+      await refreshExternalSources();
+    });
+  }
+
+  async function saveCatalogApiKey(source: ExternalCatalogSource) {
+    await run(`Setting session key for ${source.name}`, async () => {
+      await api.setExternalCatalogApiKey(
+        source.id,
+        catalogApiKeyDrafts[source.id] || undefined,
+      );
+      setCatalogApiKeyDrafts((current) => ({ ...current, [source.id]: "" }));
+      await refreshExternalSources();
+    });
+  }
+
+  function prepareExternalMagnet(item: ExternalCatalogItem) {
+    setMagnet(item.magnet);
+    setView("library");
+    setError(null);
+  }
+
+  async function publishExternalTags(item: ExternalCatalogItem) {
+    if (!item.infoHash) return;
+    const draft = catalogTagDrafts[item.infoHash] || "";
+    await run(`Publishing tags for ${item.title}`, async () => {
+      const published = await api.publishCatalogTags(
+        item.infoHash as string,
+        draft.split(",").map((tag) => tag.trim()).filter(Boolean),
+      );
+      setPublishedCatalogTags((current) => ({ ...current, [item.infoHash as string]: published }));
+      setCatalogTagDrafts((current) => ({ ...current, [item.infoHash as string]: "" }));
     });
   }
 
@@ -504,30 +619,69 @@ function App() {
           )}
 
           {view === "discover" && (
-            <Discover
-              publisher={publisher}
-              profile={profile}
-              releases={releases}
-              followed={followed}
-              busy={Boolean(busy)}
-              onPublisherChange={setPublisher}
-              onDiscover={discover}
-              onFollowed={(value) => setPublisher(value)}
-              onDownload={prepareRelease}
-              onHandoff={(release) => void handoffMagnet(releaseMagnet(release))}
-              qbittorrentConnected={qbittorrent.connected}
-              onSendQbittorrent={(release) =>
-                void sendToQbittorrent(
-                  releaseMagnet(release),
-                  release.tags,
-                )
-              }
-              catalogQuery={catalogQuery}
-              catalogResults={catalogResults}
-              onCatalogQueryChange={setCatalogQuery}
-              onCatalogSearch={searchCatalog}
-              onFollowPublisher={() => void followResolvedPublisher()}
-            />
+            <>
+              <CatalogSources
+                sources={externalSources}
+                name={catalogSourceName}
+                kind={catalogSourceKind}
+                endpoint={catalogSourceEndpoint}
+                requiresApiKey={catalogSourceRequiresApiKey}
+                apiKey={catalogSourceApiKey}
+                apiKeyDrafts={catalogApiKeyDrafts}
+                busy={Boolean(busy)}
+                onNameChange={setCatalogSourceName}
+                onKindChange={(value) => {
+                  setCatalogSourceKind(value);
+                  if (value === "rss") setCatalogSourceRequiresApiKey(false);
+                  else setCatalogSourceRequiresApiKey(true);
+                }}
+                onEndpointChange={setCatalogSourceEndpoint}
+                onRequiresApiKeyChange={setCatalogSourceRequiresApiKey}
+                onApiKeyChange={setCatalogSourceApiKey}
+                onApiKeyDraftChange={(sourceId, value) =>
+                  setCatalogApiKeyDrafts((current) => ({ ...current, [sourceId]: value }))
+                }
+                onAdd={addCatalogSource}
+                onToggle={(source) => void toggleCatalogSource(source)}
+                onRemove={(source) => void removeCatalogSource(source)}
+                onSaveApiKey={(source) => void saveCatalogApiKey(source)}
+              />
+              <Discover
+                publisher={publisher}
+                profile={profile}
+                releases={releases}
+                followed={followed}
+                busy={Boolean(busy)}
+                authenticated={auth.authenticated}
+                onPublisherChange={setPublisher}
+                onDiscover={discover}
+                onFollowed={(value) => setPublisher(value)}
+                onDownload={prepareRelease}
+                onHandoff={(release) => void handoffMagnet(releaseMagnet(release))}
+                qbittorrentConnected={qbittorrent.connected}
+                onSendQbittorrent={(release) =>
+                  void sendToQbittorrent(
+                    releaseMagnet(release),
+                    release.tags,
+                  )
+                }
+                catalogQuery={catalogQuery}
+                catalogResults={catalogResults}
+                externalResults={externalResults}
+                externalFailures={externalFailures}
+                catalogTagDrafts={catalogTagDrafts}
+                publishedCatalogTags={publishedCatalogTags}
+                onCatalogTagDraftChange={(infoHash, value) =>
+                  setCatalogTagDrafts((current) => ({ ...current, [infoHash]: value }))
+                }
+                onCatalogQueryChange={setCatalogQuery}
+                onCatalogSearch={searchCatalog}
+                onPrepareExternalMagnet={prepareExternalMagnet}
+                onPublishExternalTags={(item) => void publishExternalTags(item)}
+                onOpenExternalDetails={(url) => void openUrl(url)}
+                onFollowPublisher={() => void followResolvedPublisher()}
+              />
+            </>
           )}
 
           {view === "publish" && (
@@ -926,12 +1080,151 @@ function TorrentCard({ torrent, busy, onToggle, onRemove, onEditFiles, onPlay }:
   );
 }
 
-function Discover({ publisher, profile, releases, followed, busy, onPublisherChange, onDiscover, onFollowed, onDownload, onHandoff, qbittorrentConnected, onSendQbittorrent, catalogQuery, catalogResults, onCatalogQueryChange, onCatalogSearch, onFollowPublisher }: {
+function CatalogSources({ sources, name, kind, endpoint, requiresApiKey, apiKey, apiKeyDrafts, busy, onNameChange, onKindChange, onEndpointChange, onRequiresApiKeyChange, onApiKeyChange, onApiKeyDraftChange, onAdd, onToggle, onRemove, onSaveApiKey }: {
+  sources: ExternalCatalogSource[];
+  name: string;
+  kind: CatalogSourceKind;
+  endpoint: string;
+  requiresApiKey: boolean;
+  apiKey: string;
+  apiKeyDrafts: Record<number, string>;
+  busy: boolean;
+  onNameChange: (value: string) => void;
+  onKindChange: (value: CatalogSourceKind) => void;
+  onEndpointChange: (value: string) => void;
+  onRequiresApiKeyChange: (value: boolean) => void;
+  onApiKeyChange: (value: string) => void;
+  onApiKeyDraftChange: (sourceId: number, value: string) => void;
+  onAdd: (event: FormEvent) => void;
+  onToggle: (source: ExternalCatalogSource) => void;
+  onRemove: (source: ExternalCatalogSource) => void;
+  onSaveApiKey: (source: ExternalCatalogSource) => void;
+}) {
+  return (
+    <section className="panel catalog-sources">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">User-controlled discovery</p>
+          <h2>External catalog sources</h2>
+        </div>
+        <span>{sources.filter((source) => source.enabled).length} enabled</span>
+      </div>
+      <p className="source-policy">
+        The Academic Torrents recent feed is enabled by default. Other RSS and Torznab
+        endpoints are opt-in, non-authoritative, and never start downloads automatically.
+      </p>
+      <div className="source-list">
+        {sources.map((source) => (
+          <article className={source.enabled ? "source-row" : "source-row disabled"} key={source.id}>
+            <div className="source-summary">
+              <div>
+                <strong>{source.name}</strong>
+                <span>{source.kind.toUpperCase()} · {source.builtIn ? "built in" : "user added"}</span>
+              </div>
+              <code title={source.endpoint}>{source.endpoint}</code>
+            </div>
+            {source.kind === "torznab" && !source.hasApiKey && (
+              <div className="source-key">
+                <input
+                  type="password"
+                  value={apiKeyDrafts[source.id] || ""}
+                  onChange={(event) => onApiKeyDraftChange(source.id, event.target.value)}
+                  placeholder="Session-only API key"
+                  maxLength={512}
+                  autoComplete="off"
+                />
+                <button
+                  className="secondary compact"
+                  disabled={busy || !(apiKeyDrafts[source.id] || "").trim()}
+                  onClick={() => onSaveApiKey(source)}
+                >
+                  Set key
+                </button>
+              </div>
+            )}
+            <div className="source-actions">
+              {source.hasApiKey && <span className="key-status">Session key loaded</span>}
+              {source.hasApiKey && (
+                <button className="text-button" disabled={busy} onClick={() => onSaveApiKey(source)}>
+                  Clear key
+                </button>
+              )}
+              <button className="secondary compact" disabled={busy} onClick={() => onToggle(source)}>
+                {source.enabled ? "Disable" : "Enable"}
+              </button>
+              {!source.builtIn && (
+                <button className="text-button" disabled={busy} onClick={() => onRemove(source)}>
+                  Remove
+                </button>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
+      <form className="source-form" onSubmit={onAdd}>
+        <label>
+          Name
+          <input
+            value={name}
+            onChange={(event) => onNameChange(event.target.value)}
+            placeholder="My local Prowlarr"
+            maxLength={100}
+            required
+          />
+        </label>
+        <label>
+          Type
+          <select value={kind} onChange={(event) => onKindChange(event.target.value as CatalogSourceKind)}>
+            <option value="rss">RSS</option>
+            <option value="torznab">Torznab</option>
+          </select>
+        </label>
+        <label className="source-endpoint">
+          Endpoint
+          <input
+            value={endpoint}
+            onChange={(event) => onEndpointChange(event.target.value)}
+            placeholder={kind === "rss" ? "https://example.org/feed.xml" : "http://127.0.0.1:9696/api/v1/search"}
+            type="url"
+            required
+          />
+        </label>
+        {kind === "torznab" && (
+          <label className="source-requires-key">
+            <input
+              type="checkbox"
+              checked={requiresApiKey}
+              onChange={(event) => onRequiresApiKeyChange(event.target.checked)}
+            />
+            Requires API key
+          </label>
+        )}
+        {kind === "torznab" && requiresApiKey && (
+          <label>
+            API key
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => onApiKeyChange(event.target.value)}
+              placeholder="Optional; kept only for this session"
+              maxLength={512}
+              autoComplete="off"
+            />
+          </label>
+        )}
+        <button className="primary" type="submit" disabled={busy}>Add source</button>
+      </form>
+    </section>
+  );
+}
+
+function Discover({ publisher, profile, releases, followed, busy, authenticated, onPublisherChange, onDiscover, onFollowed, onDownload, onHandoff, qbittorrentConnected, onSendQbittorrent, catalogQuery, catalogResults, externalResults, externalFailures, catalogTagDrafts, publishedCatalogTags, onCatalogTagDraftChange, onCatalogQueryChange, onCatalogSearch, onPrepareExternalMagnet, onPublishExternalTags, onOpenExternalDetails, onFollowPublisher }: {
   publisher: string;
   profile: Profile | null;
   releases: ReleaseV1[];
   followed: string[];
   busy: boolean;
+  authenticated: boolean;
   onPublisherChange: (value: string) => void;
   onDiscover: (event: FormEvent) => void;
   onFollowed: (value: string) => void;
@@ -941,8 +1234,16 @@ function Discover({ publisher, profile, releases, followed, busy, onPublisherCha
   onSendQbittorrent: (release: ReleaseV1) => void;
   catalogQuery: string;
   catalogResults: ReleaseV1[];
+  externalResults: ExternalCatalogItem[];
+  externalFailures: CatalogSourceFailure[];
+  catalogTagDrafts: Record<string, string>;
+  publishedCatalogTags: Record<string, string[]>;
+  onCatalogTagDraftChange: (infoHash: string, value: string) => void;
   onCatalogQueryChange: (value: string) => void;
   onCatalogSearch: (event: FormEvent) => void;
+  onPrepareExternalMagnet: (item: ExternalCatalogItem) => void;
+  onPublishExternalTags: (item: ExternalCatalogItem) => void;
+  onOpenExternalDetails: (url: string) => void;
   onFollowPublisher: () => void;
 }) {
   return (
@@ -951,9 +1252,9 @@ function Discover({ publisher, profile, releases, followed, busy, onPublisherCha
         <div className="section-heading">
           <div>
             <p className="eyebrow">Opt-in federation</p>
-            <h2>Search publisher catalogs</h2>
+            <h2>Search enabled catalogs</h2>
           </div>
-          <span>Client validation required</span>
+          <span>Results are untrusted hints</span>
         </div>
         <form onSubmit={onCatalogSearch}>
           <div className="input-action">
@@ -968,8 +1269,75 @@ function Discover({ publisher, profile, releases, followed, busy, onPublisherCha
             </button>
           </div>
         </form>
+        {externalFailures.length > 0 && (
+          <div className="source-failures" role="status">
+            {externalFailures.map((failure) => (
+              <span key={`${failure.sourceId}:${failure.sourceName}`}>
+                <strong>{failure.sourceName}</strong> {failure.message}
+              </span>
+            ))}
+          </div>
+        )}
+        {externalResults.length > 0 && (
+          <div className="external-catalog-results">
+            <h3>RSS and Torznab results</h3>
+            {externalResults.map((item) => {
+              const resultKey = `${item.sourceId}:${item.infoHash || item.magnet}`;
+              const claimed = item.infoHash ? publishedCatalogTags[item.infoHash] || [] : [];
+              return (
+                <article key={resultKey}>
+                  <header>
+                    <div>
+                      <strong>{item.title}</strong>
+                      <span>{item.sourceName}{item.size ? ` · ${formatBytes(item.size)}` : ""}</span>
+                    </div>
+                    <button className="primary" onClick={() => onPrepareExternalMagnet(item)}>
+                      Add magnet
+                    </button>
+                  </header>
+                  {item.description && <p>{item.description}</p>}
+                  {(item.tags.length > 0 || claimed.length > 0) && (
+                    <div className="tags">
+                      {item.tags.map((tag) => <span key={`source:${tag}`}>#{tag}</span>)}
+                      {claimed.map((tag) => <span className="claimed" key={`claimed:${tag}`}>#{tag} · you</span>)}
+                    </div>
+                  )}
+                  <footer>
+                    <div>
+                      {item.infoHash && <code>btih:{shortHash(item.infoHash)}</code>}
+                      {item.detailsUrl && (
+                        <button className="text-button" onClick={() => onOpenExternalDetails(item.detailsUrl as string)}>
+                          Source details ↗
+                        </button>
+                      )}
+                    </div>
+                    {item.infoHash && (
+                      <div className="tag-publisher">
+                        <input
+                          value={catalogTagDrafts[item.infoHash] || ""}
+                          onChange={(event) => onCatalogTagDraftChange(item.infoHash as string, event.target.value)}
+                          placeholder="public-domain, research"
+                          maxLength={512}
+                          disabled={!authenticated}
+                        />
+                        <button
+                          className="secondary compact"
+                          disabled={!authenticated || busy || !(catalogTagDrafts[item.infoHash] || "").trim()}
+                          onClick={() => onPublishExternalTags(item)}
+                        >
+                          Publish tags
+                        </button>
+                      </div>
+                    )}
+                  </footer>
+                </article>
+              );
+            })}
+          </div>
+        )}
         {catalogResults.length > 0 && (
           <div className="catalog-results">
+            <h3>Pubky catalog results</h3>
             {catalogResults.map((release) => (
               <div key={`${release.publisher}:${release.id}`}>
                 <span>

@@ -25,6 +25,8 @@ Application ───> validated profile and release objects
 - `dataset-torrent`: BEP 46-authorized snapshot torrents.
 - `stream-gateway`: capability-protected loopback HTTP Range playback.
 - `swarm-store`: migrated local cache; no root keys or grant secrets.
+- `catalog-client`: bounded RSS/Torznab parsing and credential-free endpoint
+  validation.
 - `apps/desktop`: Tauri/React publisher and reader.
 - `services/discovery`: optional non-authoritative validated search cache.
 - `services/seeder`: bounded dataset pinning and BEP 46 reannouncement.
@@ -54,3 +56,18 @@ affecting correctness.
 
 Homeserver and torrent readers expose the same dataset interface and must not
 skip manifest/object verification.
+
+## External catalog boundary
+
+External RSS and Torznab sources only produce non-authoritative magnet
+candidates. Source configuration is persisted in `swarm-store`; API keys remain
+in process memory. Searches fetch at most four sources concurrently, cap each
+response at 4 MiB, normalize at most 100 actionable results, and deduplicate by
+infohash. Selecting a result fills the existing magnet form rather than starting
+a transfer.
+
+User-authored tags are separate `TagClaimV1` artifacts. The desktop synchronizes
+the publisher's existing claims, advances the issuer revision, writes each claim
+under `/pub/pubky.swarm/v1/tag-claims/`, and caches the validated artifact. Feed
+categories remain source hints and are never promoted to Pubky claims
+automatically.

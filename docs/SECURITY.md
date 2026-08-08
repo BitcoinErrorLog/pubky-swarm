@@ -11,8 +11,9 @@
 
 ## Key custody
 
-The desktop application never imports a user's primary root key. Normal release
-publication uses a capability scoped to `/pub/pubky.swarm/v1/releases/`.
+The desktop application never imports a user's primary root key. Normal
+publication uses capabilities scoped to `/pub/pubky.swarm/v1/releases/` and
+`/pub/pubky.swarm/v1/tag-claims/`.
 
 Dataset-head publication is currently lab-only with an isolated test identity.
 Production publication remains blocked until a trusted signer such as Pubky Ring
@@ -48,6 +49,13 @@ own 32 MiB ceiling. This remains an upstream limitation.
 Dataset manifests allow at most 100,000 objects. In-memory dataset object reads
 are capped at 100 MiB and manifest reads at 16 MiB.
 
+External catalog responses are capped at 4 MiB and 100 actionable entries.
+Remote sources require HTTPS; loopback HTTP is allowed for local Prowlarr or
+Jackett. URL credentials, fragments, sensitive credential query parameters,
+explicit non-loopback IP literals, and HTTP redirects are rejected. At most four
+sources are fetched concurrently. Request failures remove request URLs before
+they reach the UI so Torznab API keys are not disclosed in errors.
+
 ## Playback
 
 Media is exposed only on an operating-system-assigned loopback port. Every URL
@@ -66,9 +74,16 @@ network destinations. Web seeds remain unsupported in the librqbit backend.
 
 ## Local persistence
 
-SQLite stores followed publishers, validated public release records, and event
-cursors. It does not store root keys, recovery material, or grant credentials.
-Torrent persistence contains public metainfo and resume state.
+SQLite stores followed publishers, validated public release records, event
+cursors, and credential-free external catalog configuration. It does not store
+root keys, recovery material, grant credentials, or Torznab API keys. Indexer
+keys remain in memory and are cleared when the app exits. Torrent persistence
+contains public metainfo and resume state.
+
+External feed categories remain untrusted metadata. The app never downloads a
+catalog result until the user confirms the populated magnet form. Publishing a
+tag creates a separate issuer-attributed Pubky claim; it does not rewrite the
+source release or imply that Pubky Swarm verified the source's description.
 
 ## Availability is not permanence
 

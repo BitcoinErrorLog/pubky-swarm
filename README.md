@@ -23,6 +23,8 @@ The project separates:
   adapters.
 - Migrated offline cache, optional non-authoritative search service, bounded
   seeder, and machine-readable benchmark harness.
+- Persistent opt-in RSS/Torznab catalogs with an Academic Torrents starter
+  feed, session-only indexer credentials, and Pubky-attributed tag claims.
 - Automated publisher-shutdown proof: a fresh client retrieves authenticated
   metadata from a separate seeder.
 

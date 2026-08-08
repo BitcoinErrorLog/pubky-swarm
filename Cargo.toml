@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "apps/desktop/src-tauri", "crates/benchmark", "crates/dataset-core", "crates/dataset-homeserver", "crates/dataset-torrent",
+    "apps/desktop/src-tauri", "crates/benchmark", "crates/catalog-client", "crates/dataset-core", "crates/dataset-homeserver", "crates/dataset-torrent",
     "crates/libtorrent-engine",
     "crates/libtorrent-engine/sys",
     "crates/mainline-discovery",

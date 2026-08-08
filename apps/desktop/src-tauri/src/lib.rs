@@ -2,21 +2,30 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, TcpListener};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use catalog_client::{
+    CatalogItem, MAX_RESPONSE_BYTES, SourceKind, parse_catalog, torznab_search_url,
+    validate_source_url,
+};
+use futures::stream::{self, StreamExt};
 use mainline::Dht;
 use mainline_discovery::PeerDiscovery;
 use pubky::{AuthFlowKind, Capabilities, ClientId, PubkyGrantAuthFlow, PubkySession, PublicKey};
-use pubky_adapter::{PROFILE_PATH, PubkyAdapter, RELEASES_PATH};
+use pubky_adapter::{PROFILE_PATH, PubkyAdapter, RELEASES_PATH, TAG_CLAIMS_PATH};
 use qbittorrent_connector::{QbittorrentClient, TorrentInfo as QbittorrentTorrentInfo};
 use serde::{Deserialize, Serialize};
 use stream_gateway::StreamGateway;
-use swarm_protocol::{InfoHashV1, PublisherId, ReleaseFile, ReleaseV1, TorrentV1};
-use swarm_store::Store;
+use swarm_protocol::{
+    InfoHashV1, PublisherId, ReleaseFile, ReleaseV1, SourceAttribution, SubjectRef, TagClaimV1,
+    TagOperation, TorrentRef, TorrentV1,
+};
+use swarm_store::{CatalogSource, Store};
 use tauri::{Manager, State};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{Mutex, RwLock};
@@ -26,6 +35,7 @@ use torrent_engine::{
 use url::Url;
 
 const MAINLINE_IMPORT_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+const EXTERNAL_CATALOG_CONCURRENCY: usize = 4;
 
 struct AppState {
     adapter: PubkyAdapter,
@@ -36,6 +46,8 @@ struct AppState {
     auth_flow: Mutex<Option<PubkyGrantAuthFlow>>,
     session: RwLock<Option<PubkySession>>,
     qbittorrent: RwLock<Option<Arc<QbittorrentClient>>>,
+    catalog_api_keys: RwLock<HashMap<i64, String>>,
+    tag_publish_lock: Mutex<()>,
     catalog_url: Url,
     http: reqwest::Client,
 }
@@ -135,6 +147,46 @@ struct CatalogSearchResult {
     release: ReleaseV1,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddCatalogSourceRequest {
+    name: String,
+    kind: SourceKind,
+    endpoint: String,
+    requires_api_key: bool,
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogSourceStatus {
+    #[serde(flatten)]
+    source: CatalogSource,
+    has_api_key: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalCatalogSearchResponse {
+    results: Vec<CatalogItem>,
+    errors: Vec<CatalogSourceFailure>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogSourceFailure {
+    source_id: i64,
+    source_name: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishCatalogTagsRequest {
+    info_hash: String,
+    tags: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TorrentSummary {
@@ -169,6 +221,8 @@ struct TorrentFileSummary {
 async fn start_auth(state: State<'_, AppState>) -> Result<AuthStart, String> {
     let capabilities = Capabilities::builder()
         .read_write(RELEASES_PATH)
+        .map_err(display_error)?
+        .read_write(TAG_CLAIMS_PATH)
         .map_err(display_error)?
         .finish();
     let client_id = ClientId::new("pubky.swarm").map_err(display_error)?;
@@ -272,6 +326,231 @@ async fn search_catalog(
     }
     let results: Vec<CatalogSearchResult> = response.json().await.map_err(display_error)?;
     Ok(results.into_iter().map(|result| result.release).collect())
+}
+
+#[tauri::command]
+async fn list_external_catalog_sources(
+    state: State<'_, AppState>,
+) -> Result<Vec<CatalogSourceStatus>, String> {
+    let keys = state.catalog_api_keys.read().await;
+    state
+        .store
+        .catalog_sources()
+        .map_err(display_error)?
+        .into_iter()
+        .map(|source| {
+            let has_api_key = keys.contains_key(&source.id);
+            Ok(CatalogSourceStatus {
+                source,
+                has_api_key,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn add_external_catalog_source(
+    request: AddCatalogSourceRequest,
+    state: State<'_, AppState>,
+) -> Result<CatalogSourceStatus, String> {
+    let api_key = normalize_api_key(request.api_key)?;
+    if request.kind == SourceKind::Rss && api_key.is_some() {
+        return Err("RSS sources do not accept API keys".to_owned());
+    }
+    let requires_api_key = request.requires_api_key || api_key.is_some();
+    let source = state
+        .store
+        .add_catalog_source(
+            &request.name,
+            request.kind,
+            &request.endpoint,
+            requires_api_key,
+        )
+        .map_err(display_error)?;
+    if let Some(api_key) = api_key {
+        state
+            .catalog_api_keys
+            .write()
+            .await
+            .insert(source.id, api_key);
+    }
+    Ok(CatalogSourceStatus {
+        has_api_key: state.catalog_api_keys.read().await.contains_key(&source.id),
+        source,
+    })
+}
+
+#[tauri::command]
+async fn set_external_catalog_source_enabled(
+    source_id: i64,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if state
+        .store
+        .set_catalog_source_enabled(source_id, enabled)
+        .map_err(display_error)?
+    {
+        Ok(())
+    } else {
+        Err(format!("unknown catalog source {source_id}"))
+    }
+}
+
+#[tauri::command]
+async fn set_external_catalog_api_key(
+    source_id: i64,
+    api_key: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<CatalogSourceStatus, String> {
+    let source = state
+        .store
+        .catalog_source(source_id)
+        .map_err(display_error)?
+        .ok_or_else(|| format!("unknown catalog source {source_id}"))?;
+    if source.kind != SourceKind::Torznab {
+        return Err("only Torznab sources accept API keys".to_owned());
+    }
+    let api_key = normalize_api_key(api_key)?;
+    let mut keys = state.catalog_api_keys.write().await;
+    if let Some(api_key) = api_key {
+        keys.insert(source_id, api_key);
+    } else {
+        keys.remove(&source_id);
+    }
+    Ok(CatalogSourceStatus {
+        source,
+        has_api_key: keys.contains_key(&source_id),
+    })
+}
+
+#[tauri::command]
+async fn remove_external_catalog_source(
+    source_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if !state
+        .store
+        .remove_catalog_source(source_id)
+        .map_err(display_error)?
+    {
+        return Err(format!("unknown catalog source {source_id}"));
+    }
+    state.catalog_api_keys.write().await.remove(&source_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn search_external_catalogs(
+    query: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<ExternalCatalogSearchResponse, String> {
+    let query = query.trim().to_owned();
+    if query.chars().count() > 256 {
+        return Err("catalog query exceeds 256 characters".to_owned());
+    }
+    let limit = limit.unwrap_or(50).clamp(1, catalog_client::MAX_RESULTS);
+    let sources = state
+        .store
+        .catalog_sources()
+        .map_err(display_error)?
+        .into_iter()
+        .filter(|source| source.enabled)
+        .collect::<Vec<_>>();
+    let keys = state.catalog_api_keys.read().await.clone();
+    let responses = stream::iter(sources)
+        .map(|source| {
+            let query = query.clone();
+            let api_key = keys.get(&source.id).cloned();
+            let client = state.http.clone();
+            async move {
+                let result =
+                    fetch_external_catalog(&client, &source, &query, limit, api_key.as_deref())
+                        .await;
+                (source, result)
+            }
+        })
+        .buffer_unordered(EXTERNAL_CATALOG_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+    let mut results = Vec::new();
+    let mut errors = Vec::new();
+    for (source, response) in responses {
+        match response {
+            Ok(items) => results.extend(items),
+            Err(message) => errors.push(CatalogSourceFailure {
+                source_id: source.id,
+                source_name: source.name,
+                message,
+            }),
+        }
+    }
+    results.sort_by(|left, right| {
+        left.source_id
+            .cmp(&right.source_id)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    let mut seen = HashSet::new();
+    results.retain(|item| {
+        seen.insert(
+            item.info_hash
+                .clone()
+                .unwrap_or_else(|| item.magnet.clone()),
+        )
+    });
+    results.truncate(limit);
+    errors.sort_by_key(|error| error.source_id);
+    Ok(ExternalCatalogSearchResponse { results, errors })
+}
+
+#[tauri::command]
+async fn publish_catalog_tags(
+    request: PublishCatalogTagsRequest,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let _guard = state.tag_publish_lock.lock().await;
+    let session = current_session(&state).await?;
+    let issuer = PublisherId::new(session.info().public_key().clone());
+    synchronize_tag_claims(&state, &issuer).await?;
+    let info_hash: InfoHashV1 = request.info_hash.parse().map_err(display_error)?;
+    let subject = SubjectRef::Torrent(TorrentRef::btih(info_hash));
+    let tags = normalize_catalog_tags(request.tags)?;
+    let mut revision = state
+        .store
+        .highest_tag_claim_revision(&issuer)
+        .map_err(display_error)?
+        .unwrap_or(0);
+    let created_at = unix_millis()?;
+    let mut claims = Vec::with_capacity(tags.len());
+    for tag in &tags {
+        revision = revision
+            .checked_add(1)
+            .ok_or_else(|| "tag-claim revision exhausted".to_owned())?;
+        claims.push(
+            TagClaimV1::new(
+                issuer.clone(),
+                subject.clone(),
+                tag.clone(),
+                TagOperation::Add,
+                created_at,
+                revision,
+                SourceAttribution::Direct,
+            )
+            .map_err(display_error)?,
+        );
+    }
+    for claim in claims {
+        let path = format!("{TAG_CLAIMS_PATH}{}.json", claim.id());
+        state
+            .adapter
+            .put_json(&session, &path, &claim)
+            .await
+            .map_err(display_error)?;
+        state.store.cache_tag_claim(&claim).map_err(display_error)?;
+    }
+    Ok(tags)
 }
 
 #[tauri::command]
@@ -711,6 +990,150 @@ async fn get_stream_url(
     Ok(state.gateway.url(torrent_id, file_index))
 }
 
+async fn fetch_external_catalog(
+    client: &reqwest::Client,
+    source: &CatalogSource,
+    query: &str,
+    limit: usize,
+    api_key: Option<&str>,
+) -> Result<Vec<CatalogItem>, String> {
+    if source.requires_api_key && api_key.is_none() {
+        return Err("API key required for this session".to_owned());
+    }
+    let endpoint = validate_source_url(&source.endpoint).map_err(display_error)?;
+    let request_url = match source.kind {
+        SourceKind::Rss => endpoint,
+        SourceKind::Torznab => {
+            torznab_search_url(&endpoint, query, limit, api_key).map_err(display_error)?
+        }
+    };
+    let mut response = client
+        .get(request_url)
+        .header(
+            "accept",
+            "application/rss+xml, application/xml, text/xml;q=0.9",
+        )
+        .send()
+        .await
+        .map_err(|error| format!("catalog request failed: {}", error.without_url()))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "catalog returned HTTP status {}",
+            response.status()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(format!(
+            "catalog response exceeds {MAX_RESPONSE_BYTES} bytes"
+        ));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("catalog response failed: {}", error.without_url()))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(format!(
+                "catalog response exceeds {MAX_RESPONSE_BYTES} bytes"
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let parse_limit = if source.kind == SourceKind::Rss {
+        catalog_client::MAX_RESULTS
+    } else {
+        limit
+    };
+    let mut items =
+        parse_catalog(source.id, &source.name, &body, parse_limit).map_err(display_error)?;
+    if source.kind == SourceKind::Rss && !query.is_empty() {
+        let query = query.to_lowercase();
+        items.retain(|item| catalog_item_matches(item, &query));
+    }
+    items.truncate(limit);
+    Ok(items)
+}
+
+fn catalog_item_matches(item: &CatalogItem, query: &str) -> bool {
+    item.title.to_lowercase().contains(query)
+        || item.description.to_lowercase().contains(query)
+        || item
+            .info_hash
+            .as_ref()
+            .is_some_and(|value| value.contains(query))
+        || item.tags.iter().any(|tag| tag.contains(query))
+}
+
+fn normalize_api_key(value: Option<String>) -> Result<Option<String>, String> {
+    let value = value.map(|value| value.trim().to_owned());
+    if value
+        .as_ref()
+        .is_some_and(|value| value.len() > 512 || value.chars().any(char::is_control))
+    {
+        return Err("API key exceeds 512 characters or contains control characters".to_owned());
+    }
+    Ok(value.filter(|value| !value.is_empty()))
+}
+
+fn normalize_catalog_tags(values: Vec<String>) -> Result<Vec<String>, String> {
+    if values.len() > 16 {
+        return Err("at most 16 tags can be published at once".to_owned());
+    }
+    let mut tags = values
+        .into_iter()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+    if tags.is_empty() {
+        return Err("enter at least one tag".to_owned());
+    }
+    if tags.iter().any(|tag| {
+        tag.chars().count() > 64
+            || tag.chars().any(char::is_control)
+            || !tag.chars().all(|character| {
+                character.is_ascii_lowercase()
+                    || character.is_ascii_digit()
+                    || matches!(character, '-' | '_')
+            })
+    }) {
+        return Err(
+            "tags must use 1..=64 lowercase ASCII letters, digits, hyphens, or underscores"
+                .to_owned(),
+        );
+    }
+    Ok(tags)
+}
+
+async fn synchronize_tag_claims(state: &AppState, issuer: &PublisherId) -> Result<(), String> {
+    let public_key = issuer.public_key();
+    let resources = state
+        .adapter
+        .list_public(public_key, TAG_CLAIMS_PATH, None, 1_000)
+        .await
+        .map_err(display_error)?;
+    for resource in resources {
+        let claim: TagClaimV1 = state
+            .adapter
+            .get_public_json(public_key, resource.path.as_str())
+            .await
+            .map_err(display_error)?;
+        if claim.issuer() != issuer {
+            return Err(format!(
+                "tag claim {} does not match its Pubky authority",
+                claim.id()
+            ));
+        }
+        state.store.cache_tag_claim(&claim).map_err(display_error)?;
+    }
+    Ok(())
+}
+
 async fn auth_status(state: &AppState) -> Result<AuthStatus, String> {
     let session = state.session.read().await;
     Ok(AuthStatus {
@@ -879,6 +1302,24 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn application_builder() -> tauri::Builder<tauri::Wry> {
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(
+        |app, _argv, _working_directory| focus_main_window(app),
+    ));
+    builder
+}
+
+fn http_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Pubky-Swarm/0.1")
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Build and run the native Pubky Swarm application.
 ///
@@ -886,15 +1327,7 @@ fn focus_main_window(app: &tauri::AppHandle) {
 ///
 /// Panics if Tauri cannot build its runtime or generated application context.
 pub fn run() {
-    let mut builder = tauri::Builder::default();
-    #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(
-            |app, _argv, _working_directory| focus_main_window(app),
-        ));
-    }
-
-    let application = builder
+    let application = application_builder()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -940,11 +1373,10 @@ pub fn run() {
                 auth_flow: Mutex::new(None),
                 session: RwLock::new(None),
                 qbittorrent: RwLock::new(None),
+                catalog_api_keys: RwLock::new(HashMap::new()),
+                tag_publish_lock: Mutex::new(()),
                 catalog_url,
-                http: reqwest::Client::builder()
-                    .connect_timeout(Duration::from_secs(5))
-                    .timeout(Duration::from_secs(30))
-                    .build()?,
+                http: http_client()?,
             });
             Ok(())
         })
@@ -955,6 +1387,13 @@ pub fn run() {
             get_profile,
             list_releases,
             search_catalog,
+            list_external_catalog_sources,
+            add_external_catalog_source,
+            set_external_catalog_source_enabled,
+            set_external_catalog_api_key,
+            remove_external_catalog_source,
+            search_external_catalogs,
+            publish_catalog_tags,
             create_release,
             follow_publisher,
             list_followed,
@@ -985,4 +1424,52 @@ pub fn run() {
             tauri::async_runtime::block_on(engine.shutdown());
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_tags_are_normalized_before_any_publication() {
+        assert_eq!(
+            normalize_catalog_tags(vec![
+                " Research ".to_owned(),
+                "research".to_owned(),
+                "public-domain".to_owned(),
+            ])
+            .unwrap(),
+            vec!["public-domain", "research"]
+        );
+        assert!(normalize_catalog_tags(vec!["not valid".to_owned()]).is_err());
+        assert!(normalize_catalog_tags(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn catalog_api_keys_are_bounded_and_empty_values_clear_the_key() {
+        assert_eq!(
+            normalize_api_key(Some(" secret ".to_owned())).unwrap(),
+            Some("secret".to_owned())
+        );
+        assert_eq!(normalize_api_key(Some(" ".to_owned())).unwrap(), None);
+        assert!(normalize_api_key(Some("x".repeat(513))).is_err());
+    }
+
+    #[test]
+    fn rss_search_matches_normalized_metadata() {
+        let item = CatalogItem {
+            source_id: 1,
+            source_name: "Academic Torrents".to_owned(),
+            title: "Open Research Corpus".to_owned(),
+            description: "Reproducible dataset".to_owned(),
+            magnet: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_owned(),
+            info_hash: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            size: Some(42),
+            tags: vec!["dataset".to_owned()],
+            details_url: None,
+        };
+        assert!(catalog_item_matches(&item, "research"));
+        assert!(catalog_item_matches(&item, "dataset"));
+        assert!(!catalog_item_matches(&item, "film"));
+    }
 }

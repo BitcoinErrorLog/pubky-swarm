@@ -12,6 +12,8 @@ use serde::{Serialize, de::DeserializeOwned};
 pub const PROFILE_PATH: &str = "/pub/pubky.app/profile.json";
 /// Versioned release-record namespace owned by this application.
 pub const RELEASES_PATH: &str = "/pub/pubky.swarm/v1/releases/";
+/// Versioned issuer-attributed tag-claim namespace.
+pub const TAG_CLAIMS_PATH: &str = "/pub/pubky.swarm/v1/tag-claims/";
 
 /// Thin, HTTP-independent application facade over the official Pubky SDK.
 #[derive(Debug, Clone)]

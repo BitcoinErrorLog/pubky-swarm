@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+catalog-client = { path = "../catalog-client" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde.workspace = true
 swarm-protocol = { version = "0.1.0", path = "../swarm-protocol" }

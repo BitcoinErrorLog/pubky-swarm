@@ -868,6 +868,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "catalog-client"
+version = "0.1.0"
+dependencies = [
+ "quick-xml 0.41.0",
+ "serde",
+ "thiserror 2.0.20",
+ "url",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5367,6 +5377,8 @@ dependencies = [
 name = "pubky-swarm-desktop"
 version = "0.1.0"
 dependencies = [
+ "catalog-client",
+ "futures",
  "mainline 8.0.0",
  "mainline-discovery",
  "pubky",
@@ -7095,6 +7107,7 @@ dependencies = [
 name = "swarm-store"
 version = "0.1.0"
 dependencies = [
+ "catalog-client",
  "pubky",
  "rusqlite",
  "serde",
