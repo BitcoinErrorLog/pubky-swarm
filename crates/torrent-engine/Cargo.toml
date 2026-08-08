@@ -17,6 +17,7 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+catalog-client = { path = "../catalog-client" }
 mainline.workspace = true
 mainline-discovery = { path = "../mainline-discovery" }
 swarm-protocol = { path = "../swarm-protocol" }

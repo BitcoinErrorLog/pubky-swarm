@@ -100,6 +100,10 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Test catalog interaction contracts
+        working-directory: apps/desktop
+        run: npm test
+
       - name: Build frontend
         working-directory: apps/desktop
         run: npm run build

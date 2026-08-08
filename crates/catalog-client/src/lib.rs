@@ -425,12 +425,17 @@ impl ItemBuilder {
             .cloned()
             .or_else(|| {
                 info_hash.as_ref().map(|hash| {
+                    let mut magnet = format!("magnet:?xt=urn:btih:{hash}");
                     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-                    serializer.append_pair("xt", &format!("urn:btih:{hash}"));
                     if !self.title.trim().is_empty() {
                         serializer.append_pair("dn", self.title.trim());
                     }
-                    format!("magnet:?{}", serializer.finish())
+                    let hints = serializer.finish();
+                    if !hints.is_empty() {
+                        magnet.push('&');
+                        magnet.push_str(&hints);
+                    }
+                    magnet
                 })
             })?;
         if magnet.len() > 8_192 || self.title.trim().is_empty() {
@@ -642,7 +647,12 @@ mod tests {
         assert_eq!(items[0].info_hash.as_deref(), Some(HASH));
         assert_eq!(items[0].size, Some(42));
         assert_eq!(items[0].tags, vec!["dataset"]);
-        assert!(items[0].magnet.contains(HASH));
+        assert!(
+            items[0]
+                .magnet
+                .starts_with(&format!("magnet:?xt=urn:btih:{HASH}"))
+        );
+        assert!(items[0].magnet.contains("&dn=Research+%26+Data"));
         assert_eq!(items[0].provenance, CatalogProvenance::RssHint);
     }
 

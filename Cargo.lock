@@ -5284,6 +5284,7 @@ dependencies = [
  "pubky-testnet",
  "serde",
  "serde_json",
+ "swarm-protocol",
  "tokio",
 ]
 
@@ -7942,6 +7943,7 @@ name = "torrent-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "catalog-client",
  "futures",
  "librqbit",
  "mainline 8.0.0",

@@ -1640,8 +1640,15 @@ function isPaused(torrent: TorrentSummary) {
   return /paused|stopped|idle/i.test(torrent.state);
 }
 
-function isMagnet(value: string) {
-  return /^magnet:\?.*xt=urn:btih:/i.test(value.trim());
+export function isMagnet(value: string) {
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "magnet:" && parsed.searchParams
+      .getAll("xt")
+      .some((target) => /^urn:btih:(?:[a-f0-9]{40}|[a-z2-7]{32})$/i.test(target));
+  } catch {
+    return false;
+  }
 }
 
 function releaseMagnet(release: ReleaseV1) {

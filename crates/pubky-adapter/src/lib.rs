@@ -162,6 +162,10 @@ mod tests {
     use pubky::{ClientId, Keypair};
     use pubky_testnet::{EphemeralTestnet, pubky_homeserver::ConnectionString};
     use serde_json::{Value, json};
+    use swarm_protocol::{
+        InfoHashV1, PublisherId, ReleaseFile, ReleaseV1, SourceAttribution, SubjectRef, TagClaimV1,
+        TagOperation, TorrentV1,
+    };
 
     use super::*;
 
@@ -253,5 +257,77 @@ mod tests {
                 .expect("list after delete")
                 .is_empty()
         );
+
+        let publisher = PublisherId::new(user.clone());
+        let shared_release = ReleaseV1::new(
+            publisher.clone(),
+            1,
+            "Shared research file".to_owned(),
+            "Acceptance-test payload metadata".to_owned(),
+            TorrentV1 {
+                info_hash: InfoHashV1::from_bytes([0x42; 20]),
+                size: 5,
+                files: vec![ReleaseFile {
+                    path: "shared.txt".to_owned(),
+                    size: 5,
+                }],
+                trackers: Vec::new(),
+            },
+            vec!["research".to_owned()],
+        )
+        .expect("valid shared release");
+        let tag_claim = TagClaimV1::new(
+            publisher,
+            SubjectRef::Torrent(shared_release.torrent_ref()),
+            "public-domain".to_owned(),
+            TagOperation::Add,
+            2,
+            1,
+            SourceAttribution::Direct,
+        )
+        .expect("valid public tag claim");
+        let tag_path = format!("{TAG_CLAIMS_PATH}{}.json", tag_claim.id());
+        adapter
+            .put_json(&session, &shared_release.storage_path(), &shared_release)
+            .await
+            .expect("publish validated release");
+        adapter
+            .put_json(&session, &tag_path, &tag_claim)
+            .await
+            .expect("publish tag claim");
+
+        let contact = PubkyAdapter::with_sdk(
+            testnet
+                .sdk()
+                .expect("independent contact SDK on the same testnet"),
+        );
+        let contact_releases = contact
+            .list_public(&user, RELEASES_PATH, None, 10)
+            .await
+            .expect("contact lists shared releases");
+        assert!(
+            contact_releases
+                .iter()
+                .any(|resource| resource.path.as_str() == shared_release.storage_path())
+        );
+        let received_release: ReleaseV1 = contact
+            .get_public_json(&user, &shared_release.storage_path())
+            .await
+            .expect("contact retrieves validated release");
+        let received_claim: TagClaimV1 = contact
+            .get_public_json(&user, &tag_path)
+            .await
+            .expect("contact retrieves publisher tag");
+        assert_eq!(received_release, shared_release);
+        assert_eq!(received_claim, tag_claim);
+
+        adapter
+            .delete(&session, &shared_release.storage_path())
+            .await
+            .expect("delete shared release");
+        adapter
+            .delete(&session, &tag_path)
+            .await
+            .expect("delete shared tag");
     }
 }

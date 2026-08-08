@@ -14,6 +14,7 @@ use std::io::SeekFrom;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use catalog_client::{SourceKind, parse_catalog};
 use mainline::{Dht, Testnet};
 use mainline_discovery::PeerDiscovery;
 use swarm_protocol::InfoHashV1;
@@ -21,6 +22,7 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use torrent_engine::{
     AddOptions, CreateOptions, DhtMode, EngineConfig, Error, TorrentEngine, create_torrent,
+    magnet_v1_info_hash,
 };
 
 /// Deterministic pseudo-random-but-reproducible file contents.
@@ -93,6 +95,29 @@ async fn explicit_peer_seed_leech_selective_stream() {
     .unwrap();
     assert_eq!(created.file_count(), 2);
     assert_eq!(created.total_length(), (file_a.len() + file_b.len()) as u64);
+    let catalog_xml = format!(
+        "<rss><channel><item><title>Local shared data</title>\
+         <infohash>{}</infohash><size>{}</size></item></channel></rss>",
+        created.info_hash_hex(),
+        created.total_length()
+    );
+    let catalog_item = parse_catalog(
+        1,
+        "Local acceptance catalog",
+        SourceKind::Rss,
+        catalog_xml.as_bytes(),
+        1,
+    )
+    .unwrap()
+    .into_iter()
+    .next()
+    .expect("catalog must expose the shared torrent");
+    assert_eq!(
+        magnet_v1_info_hash(&catalog_item.magnet)
+            .unwrap()
+            .as_deref(),
+        Some(created.info_hash_hex())
+    );
 
     let seeder = TorrentEngine::new(local_config(seed_root.clone()))
         .await
@@ -150,7 +175,7 @@ async fn explicit_peer_seed_leech_selective_stream() {
 
     let leech_torrent = leecher
         .add_magnet(
-            &created.magnet(),
+            &catalog_item.magnet,
             AddOptions {
                 only_files: Some(vec![b_index]),
                 initial_peers: Some(vec![seeder_addr]),

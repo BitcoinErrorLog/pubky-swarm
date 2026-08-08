@@ -15,6 +15,7 @@ serde.workspace = true
 futures.workspace = true
 pubky-testnet = "=0.10.0"
 serde_json.workspace = true
+swarm-protocol = { path = "../swarm-protocol" }
 tokio.workspace = true
 
 [lints]

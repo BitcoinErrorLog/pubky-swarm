@@ -56,6 +56,7 @@ See:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/SECURITY.md`](docs/SECURITY.md)
+- [`docs/TESTING.md`](docs/TESTING.md)
 - [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
 - [`docs/DEMO.md`](docs/DEMO.md)
 
