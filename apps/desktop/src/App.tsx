@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
@@ -89,6 +90,43 @@ function App() {
     const interval = window.setInterval(() => void refreshTorrents(false), 2_000);
     return () => window.clearInterval(interval);
   }, [refreshTorrents]);
+
+  useEffect(() => {
+    let active = true;
+    let stopListening: (() => void) | undefined;
+    const receiveMagnet = (urls: string[]) => {
+      const value = urls.find(isMagnet);
+      if (!value) return;
+      setMagnet(value);
+      setView("library");
+      setError(null);
+      window.focus();
+    };
+
+    void getCurrent()
+      .then((urls) => {
+        if (active && urls) receiveMagnet(urls);
+      })
+      .catch((reason) => {
+        if (active) setError(`Could not read the incoming magnet link: ${errorMessage(reason)}`);
+      });
+    void onOpenUrl(receiveMagnet)
+      .then((unlisten) => {
+        if (active) {
+          stopListening = unlisten;
+        } else {
+          unlisten();
+        }
+      })
+      .catch((reason) => {
+        if (active) setError(`Could not listen for magnet links: ${errorMessage(reason)}`);
+      });
+
+    return () => {
+      active = false;
+      stopListening?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!authUrl || auth.authenticated) return;

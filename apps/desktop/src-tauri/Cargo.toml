@@ -27,6 +27,7 @@ stream-gateway = { path = "../../../crates/stream-gateway" }
 swarm-protocol = { path = "../../../crates/swarm-protocol" }
 swarm-store = { path = "../../../crates/swarm-store" }
 tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tokio.workspace = true
@@ -35,4 +36,7 @@ url.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 

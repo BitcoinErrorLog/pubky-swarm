@@ -871,6 +871,14 @@ fn display_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+#[cfg(desktop)]
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Build and run the native Pubky Swarm application.
 ///
@@ -878,7 +886,16 @@ fn display_error(error: impl std::fmt::Display) -> String {
 ///
 /// Panics if Tauri cannot build its runtime or generated application context.
 pub fn run() {
-    let application = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(
+            |app, _argv, _working_directory| focus_main_window(app),
+        ));
+    }
+
+    let application = builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
