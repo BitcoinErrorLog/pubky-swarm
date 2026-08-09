@@ -16,9 +16,9 @@ mod sources;
 
 pub use catalog::BlocklistSubscription;
 pub use settings::{ClientSettings, MAX_LIMIT_KBPS};
-pub use sources::CatalogSource;
+pub use sources::{BUILT_IN_RSS_PRESETS, BuiltInRssPreset, CatalogSource};
 
-const CURRENT_SCHEMA_VERSION: i64 = 4;
+const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 /// Persistent cache failures.
 #[derive(Debug, thiserror::Error)]
@@ -309,7 +309,14 @@ fn migrate(connection: &mut Connection) -> Result<()> {
     }
     if version == 3 {
         migrate_v4(connection)?;
+        version = 4;
     }
+    if version == 4 {
+        migrate_v5(connection)?;
+    }
+    // Idempotent: new app versions can ship additional presets without a
+    // schema bump when only INSERT OR IGNORE is required.
+    sources::ensure_built_in_rss_presets(connection)?;
     Ok(())
 }
 
@@ -477,6 +484,13 @@ fn migrate_v4(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v5(connection: &mut Connection) -> Result<()> {
+    // Schema unchanged; version bump marks that curated RSS presets are synced
+    // through ensure_built_in_rss_presets after migrate.
+    connection.pragma_update(None, "user_version", 5)?;
+    Ok(())
+}
+
 fn unix_millis() -> Result<u64> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -491,6 +505,7 @@ mod tests {
     use swarm_protocol::{InfoHashV1, ReleaseFile, TorrentV1};
 
     use super::*;
+    use crate::BUILT_IN_RSS_PRESETS;
 
     fn publisher(seed: u8) -> PublisherId {
         PublisherId::new(Keypair::from_secret(&[seed; 32]).public_key())
@@ -524,7 +539,7 @@ mod tests {
         let bob = publisher(2);
         {
             let store = Store::open(&path).unwrap();
-            assert_eq!(store.schema_version().unwrap(), 4);
+            assert_eq!(store.schema_version().unwrap(), 5);
             store.follow(&alice).unwrap();
             store.follow(&bob).unwrap();
             store.set_cursor(&alice, 42).unwrap();
@@ -555,7 +570,7 @@ mod tests {
             Store::from_connection(connection),
             Err(Error::UnsupportedSchema {
                 found: 99,
-                supported: 4
+                supported: 5
             })
         ));
     }
@@ -619,12 +634,16 @@ mod tests {
 
         migrate(&mut connection).unwrap();
         let store = Store::from_connection(connection).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 4);
+        assert_eq!(store.schema_version().unwrap(), 5);
         assert_eq!(store.followed_publishers().unwrap(), vec![alice.clone()]);
         assert_eq!(store.cursor(&alice).unwrap(), Some(99));
         assert_eq!(store.releases_for(&alice).unwrap(), vec![cached]);
         assert!(store.blocklist_subscriptions().unwrap().is_empty());
         assert_eq!(store.client_settings().unwrap(), ClientSettings::default());
+        assert_eq!(
+            store.catalog_sources().unwrap().len(),
+            BUILT_IN_RSS_PRESETS.len()
+        );
     }
 
     #[test]

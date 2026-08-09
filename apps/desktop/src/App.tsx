@@ -16,6 +16,7 @@ import type {
   QbittorrentStatus,
   QbittorrentTorrent,
   ReleaseV1,
+  RssPresetInfo,
   TorrentSummary,
 } from "./types";
 import "./App.css";
@@ -69,10 +70,14 @@ function App() {
   const [externalResults, setExternalResults] = useState<ExternalCatalogItem[]>([]);
   const [externalFailures, setExternalFailures] = useState<CatalogSourceFailure[]>([]);
   const [catalogSourceName, setCatalogSourceName] = useState("");
-  const [catalogSourceKind, setCatalogSourceKind] = useState<CatalogSourceKind>("rss");
+  const [catalogSourceKind, setCatalogSourceKind] = useState<CatalogSourceKind>("torznab");
   const [catalogSourceEndpoint, setCatalogSourceEndpoint] = useState("");
   const [catalogSourceRequiresApiKey, setCatalogSourceRequiresApiKey] = useState(true);
   const [catalogSourceApiKey, setCatalogSourceApiKey] = useState("");
+  const [rssFeedUrl, setRssFeedUrl] = useState("");
+  const [rssFeedName, setRssFeedName] = useState("");
+  const [showTorznabForm, setShowTorznabForm] = useState(false);
+  const [rssPresets, setRssPresets] = useState<RssPresetInfo[]>([]);
   const [catalogApiKeyDrafts, setCatalogApiKeyDrafts] = useState<Record<number, string>>({});
   const [catalogTagDrafts, setCatalogTagDrafts] = useState<Record<string, string>>({});
   const [publishedCatalogTags, setPublishedCatalogTags] = useState<Record<string, string[]>>({});
@@ -119,7 +124,12 @@ function App() {
 
   const refreshExternalSources = useCallback(async (surfaceError = true) => {
     try {
-      setExternalSources(await api.externalCatalogSources());
+      const [sources, presets] = await Promise.all([
+        api.externalCatalogSources(),
+        api.rssPresets(),
+      ]);
+      setExternalSources(sources);
+      setRssPresets(presets);
     } catch (reason) {
       if (surfaceError) setError(errorMessage(reason));
     }
@@ -298,9 +308,22 @@ function App() {
     });
   }
 
+  async function addRssFeed(event: FormEvent) {
+    event.preventDefault();
+    await run("Adding RSS feed", async () => {
+      await api.addRssFeed({
+        feedUrl: rssFeedUrl.trim(),
+        ...(rssFeedName.trim() ? { name: rssFeedName.trim() } : {}),
+      });
+      setRssFeedUrl("");
+      setRssFeedName("");
+      await refreshExternalSources();
+    });
+  }
+
   async function addCatalogSource(event: FormEvent) {
     event.preventDefault();
-    await run("Adding external catalog", async () => {
+    await run("Adding Torznab source", async () => {
       await api.addExternalCatalogSource({
         name: catalogSourceName,
         kind: catalogSourceKind,
@@ -689,6 +712,10 @@ function App() {
             <>
               <CatalogSources
                 sources={externalSources}
+                presets={rssPresets}
+                feedUrl={rssFeedUrl}
+                feedName={rssFeedName}
+                showTorznab={showTorznabForm}
                 name={catalogSourceName}
                 kind={catalogSourceKind}
                 endpoint={catalogSourceEndpoint}
@@ -696,6 +723,10 @@ function App() {
                 apiKey={catalogSourceApiKey}
                 apiKeyDrafts={catalogApiKeyDrafts}
                 busy={Boolean(busy)}
+                onFeedUrlChange={setRssFeedUrl}
+                onFeedNameChange={setRssFeedName}
+                onAddFeed={addRssFeed}
+                onToggleTorznab={() => setShowTorznabForm((current) => !current)}
                 onNameChange={setCatalogSourceName}
                 onKindChange={(value) => {
                   setCatalogSourceKind(value);
@@ -708,7 +739,7 @@ function App() {
                 onApiKeyDraftChange={(sourceId, value) =>
                   setCatalogApiKeyDrafts((current) => ({ ...current, [sourceId]: value }))
                 }
-                onAdd={addCatalogSource}
+                onAddTorznab={addCatalogSource}
                 onToggle={(source) => void toggleCatalogSource(source)}
                 onRemove={(source) => void removeCatalogSource(source)}
                 onSaveApiKey={(source) => void saveCatalogApiKey(source)}
@@ -1167,8 +1198,39 @@ function TorrentCard({ torrent, busy, onToggle, onRemove, onEditFiles, onPlay }:
   );
 }
 
-function CatalogSources({ sources, name, kind, endpoint, requiresApiKey, apiKey, apiKeyDrafts, busy, onNameChange, onKindChange, onEndpointChange, onRequiresApiKeyChange, onApiKeyChange, onApiKeyDraftChange, onAdd, onToggle, onRemove, onSaveApiKey }: {
+function CatalogSources({
+  sources,
+  presets,
+  feedUrl,
+  feedName,
+  showTorznab,
+  name,
+  kind,
+  endpoint,
+  requiresApiKey,
+  apiKey,
+  apiKeyDrafts,
+  busy,
+  onFeedUrlChange,
+  onFeedNameChange,
+  onAddFeed,
+  onToggleTorznab,
+  onNameChange,
+  onKindChange,
+  onEndpointChange,
+  onRequiresApiKeyChange,
+  onApiKeyChange,
+  onApiKeyDraftChange,
+  onAddTorznab,
+  onToggle,
+  onRemove,
+  onSaveApiKey,
+}: {
   sources: ExternalCatalogSource[];
+  presets: RssPresetInfo[];
+  feedUrl: string;
+  feedName: string;
+  showTorznab: boolean;
   name: string;
   kind: CatalogSourceKind;
   endpoint: string;
@@ -1176,131 +1238,198 @@ function CatalogSources({ sources, name, kind, endpoint, requiresApiKey, apiKey,
   apiKey: string;
   apiKeyDrafts: Record<number, string>;
   busy: boolean;
+  onFeedUrlChange: (value: string) => void;
+  onFeedNameChange: (value: string) => void;
+  onAddFeed: (event: FormEvent) => void;
+  onToggleTorznab: () => void;
   onNameChange: (value: string) => void;
   onKindChange: (value: CatalogSourceKind) => void;
   onEndpointChange: (value: string) => void;
   onRequiresApiKeyChange: (value: boolean) => void;
   onApiKeyChange: (value: string) => void;
   onApiKeyDraftChange: (sourceId: number, value: string) => void;
-  onAdd: (event: FormEvent) => void;
+  onAddTorznab: (event: FormEvent) => void;
   onToggle: (source: ExternalCatalogSource) => void;
   onRemove: (source: ExternalCatalogSource) => void;
   onSaveApiKey: (source: ExternalCatalogSource) => void;
 }) {
+  const presetByEndpoint = useMemo(() => {
+    const map = new Map<string, RssPresetInfo>();
+    for (const preset of presets) map.set(preset.endpoint, preset);
+    return map;
+  }, [presets]);
+  const builtIns = sources.filter((source) => source.builtIn);
+  const userSources = sources.filter((source) => !source.builtIn);
+
   return (
     <section className="panel catalog-sources">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">User-controlled discovery</p>
-          <h2>External catalog sources</h2>
+          <p className="eyebrow">Simple discovery</p>
+          <h2>RSS catalogs</h2>
         </div>
         <span>{sources.filter((source) => source.enabled).length} enabled</span>
       </div>
       <p className="source-policy">
-        The Academic Torrents recent feed is enabled by default. Other RSS and Torznab
-        endpoints are opt-in, non-authoritative, and never start downloads automatically.
+        Toggle curated Academic Torrents feeds, or paste any HTTPS RSS URL that
+        includes magnets or infohashes. Results are hints only and never start
+        downloads automatically.
       </p>
-      <div className="source-list">
-        {sources.map((source) => (
-          <article className={source.enabled ? "source-row" : "source-row disabled"} key={source.id}>
-            <div className="source-summary">
+
+      <div className="preset-list">
+        {builtIns.map((source) => {
+          const preset = presetByEndpoint.get(source.endpoint);
+          return (
+            <article className={source.enabled ? "preset-row" : "preset-row disabled"} key={source.id}>
               <div>
                 <strong>{source.name}</strong>
-                <span>{source.kind.toUpperCase()} · {source.builtIn ? "built in" : "user added"}</span>
+                <p>{preset?.description || "Built-in RSS catalog"}</p>
               </div>
-              <code title={source.endpoint}>{source.endpoint}</code>
-            </div>
-            {source.kind === "torznab" && !source.hasApiKey && (
-              <div className="source-key">
-                <input
-                  type="password"
-                  value={apiKeyDrafts[source.id] || ""}
-                  onChange={(event) => onApiKeyDraftChange(source.id, event.target.value)}
-                  placeholder="Session-only API key"
-                  maxLength={512}
-                  autoComplete="off"
-                />
-                <button
-                  className="secondary compact"
-                  disabled={busy || !(apiKeyDrafts[source.id] || "").trim()}
-                  onClick={() => onSaveApiKey(source)}
-                >
-                  Set key
-                </button>
-              </div>
-            )}
-            <div className="source-actions">
-              {source.hasApiKey && <span className="key-status">Session key loaded</span>}
-              {source.hasApiKey && (
-                <button className="text-button" disabled={busy} onClick={() => onSaveApiKey(source)}>
-                  Clear key
-                </button>
-              )}
               <button className="secondary compact" disabled={busy} onClick={() => onToggle(source)}>
-                {source.enabled ? "Disable" : "Enable"}
+                {source.enabled ? "Enabled" : "Enable"}
               </button>
-              {!source.builtIn && (
+            </article>
+          );
+        })}
+      </div>
+
+      <form className="feed-form" onSubmit={onAddFeed}>
+        <label className="wide">
+          Paste an RSS feed URL
+          <div className="input-action">
+            <input
+              value={feedUrl}
+              onChange={(event) => onFeedUrlChange(event.target.value)}
+              placeholder="https://example.org/feed.xml"
+              type="url"
+              required
+            />
+            <button className="primary" type="submit" disabled={busy || !feedUrl.trim()}>
+              Add feed
+            </button>
+          </div>
+        </label>
+        <label>
+          Optional name
+          <input
+            value={feedName}
+            onChange={(event) => onFeedNameChange(event.target.value)}
+            placeholder="Defaults from the URL"
+            maxLength={100}
+          />
+        </label>
+      </form>
+
+      {userSources.length > 0 && (
+        <div className="source-list">
+          <h3>Your feeds</h3>
+          {userSources.map((source) => (
+            <article className={source.enabled ? "source-row" : "source-row disabled"} key={source.id}>
+              <div className="source-summary">
+                <div>
+                  <strong>{source.name}</strong>
+                  <span>{source.kind.toUpperCase()} · user added</span>
+                </div>
+                <code title={source.endpoint}>{source.endpoint}</code>
+              </div>
+              {source.kind === "torznab" && !source.hasApiKey && (
+                <div className="source-key">
+                  <input
+                    type="password"
+                    value={apiKeyDrafts[source.id] || ""}
+                    onChange={(event) => onApiKeyDraftChange(source.id, event.target.value)}
+                    placeholder="Session-only API key"
+                    maxLength={512}
+                    autoComplete="off"
+                  />
+                  <button
+                    className="secondary compact"
+                    disabled={busy || !(apiKeyDrafts[source.id] || "").trim()}
+                    onClick={() => onSaveApiKey(source)}
+                  >
+                    Set key
+                  </button>
+                </div>
+              )}
+              <div className="source-actions">
+                {source.hasApiKey && <span className="key-status">Session key loaded</span>}
+                {source.hasApiKey && (
+                  <button className="text-button" disabled={busy} onClick={() => onSaveApiKey(source)}>
+                    Clear key
+                  </button>
+                )}
+                <button className="secondary compact" disabled={busy} onClick={() => onToggle(source)}>
+                  {source.enabled ? "Disable" : "Enable"}
+                </button>
                 <button className="text-button" disabled={busy} onClick={() => onRemove(source)}>
                   Remove
                 </button>
-              )}
-            </div>
-          </article>
-        ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      <div className="advanced-source">
+        <button className="text-button" type="button" onClick={onToggleTorznab}>
+          {showTorznab ? "Hide" : "Show"} advanced Torznab (Jackett / Prowlarr)
+        </button>
+        {showTorznab && (
+          <form className="source-form" onSubmit={onAddTorznab}>
+            <label>
+              Name
+              <input
+                value={name}
+                onChange={(event) => onNameChange(event.target.value)}
+                placeholder="My local Prowlarr"
+                maxLength={100}
+                required
+              />
+            </label>
+            <label>
+              Type
+              <select value={kind} onChange={(event) => onKindChange(event.target.value as CatalogSourceKind)}>
+                <option value="torznab">Torznab</option>
+                <option value="rss">RSS</option>
+              </select>
+            </label>
+            <label className="source-endpoint">
+              Endpoint
+              <input
+                value={endpoint}
+                onChange={(event) => onEndpointChange(event.target.value)}
+                placeholder={kind === "rss" ? "https://example.org/feed.xml" : "http://127.0.0.1:9696/1/api"}
+                type="url"
+                required
+              />
+            </label>
+            {kind === "torznab" && (
+              <label className="source-requires-key">
+                <input
+                  type="checkbox"
+                  checked={requiresApiKey}
+                  onChange={(event) => onRequiresApiKeyChange(event.target.checked)}
+                />
+                Requires API key
+              </label>
+            )}
+            {kind === "torznab" && requiresApiKey && (
+              <label>
+                API key
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(event) => onApiKeyChange(event.target.value)}
+                  placeholder="Optional; kept only for this session"
+                  maxLength={512}
+                  autoComplete="off"
+                />
+              </label>
+            )}
+            <button className="primary" type="submit" disabled={busy}>Add Torznab source</button>
+          </form>
+        )}
       </div>
-      <form className="source-form" onSubmit={onAdd}>
-        <label>
-          Name
-          <input
-            value={name}
-            onChange={(event) => onNameChange(event.target.value)}
-            placeholder="My local Prowlarr"
-            maxLength={100}
-            required
-          />
-        </label>
-        <label>
-          Type
-          <select value={kind} onChange={(event) => onKindChange(event.target.value as CatalogSourceKind)}>
-            <option value="rss">RSS</option>
-            <option value="torznab">Torznab</option>
-          </select>
-        </label>
-        <label className="source-endpoint">
-          Endpoint
-          <input
-            value={endpoint}
-            onChange={(event) => onEndpointChange(event.target.value)}
-            placeholder={kind === "rss" ? "https://example.org/feed.xml" : "http://127.0.0.1:9696/api/v1/search"}
-            type="url"
-            required
-          />
-        </label>
-        {kind === "torznab" && (
-          <label className="source-requires-key">
-            <input
-              type="checkbox"
-              checked={requiresApiKey}
-              onChange={(event) => onRequiresApiKeyChange(event.target.checked)}
-            />
-            Requires API key
-          </label>
-        )}
-        {kind === "torznab" && requiresApiKey && (
-          <label>
-            API key
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(event) => onApiKeyChange(event.target.value)}
-              placeholder="Optional; kept only for this session"
-              maxLength={512}
-              autoComplete="off"
-            />
-          </label>
-        )}
-        <button className="primary" type="submit" disabled={busy}>Add source</button>
-      </form>
     </section>
   );
 }

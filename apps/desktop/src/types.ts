@@ -98,6 +98,18 @@ export type ExternalCatalogSource = {
   hasApiKey: boolean;
 };
 
+export type RssPresetInfo = {
+  name: string;
+  endpoint: string;
+  enabledByDefault: boolean;
+  description: string;
+};
+
+export type AddRssFeedRequest = {
+  feedUrl: string;
+  name?: string;
+};
+
 export type AddExternalCatalogSourceRequest = {
   name: string;
   kind: CatalogSourceKind;

@@ -13,6 +13,7 @@ serde.workspace = true
 swarm-protocol = { version = "0.1.0", path = "../swarm-protocol" }
 serde_json.workspace = true
 thiserror.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 pubky.workspace = true

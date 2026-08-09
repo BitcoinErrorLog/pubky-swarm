@@ -64,8 +64,9 @@ silently become the publisher or redefine authenticated data.
 
 - Search the optional Pubky discovery cache.
 - Search persistent, user-approved RSS and Torznab sources.
-- Start with the official Academic Torrents recent RSS feed.
-- Connect local Jackett or Prowlarr endpoints with session-only API keys.
+- Start with curated Academic Torrents RSS presets (Recent enabled by default).
+- Paste any HTTPS RSS feed URL that carries magnets or infohashes.
+- Connect local Jackett or Prowlarr Torznab endpoints with session-only API keys.
 - Preserve RSS/Torznab results as explicit, non-authoritative hints.
 - Require confirmation before a catalog result starts downloading.
 
@@ -134,10 +135,10 @@ Cargo's normal hard-link and incremental-cache behavior.
 ## First run
 
 1. Open **Library** to paste a magnet or select a `.torrent` file.
-2. Open **Discover** and search the enabled Academic Torrents feed.
+2. Open **Discover**. Toggle curated Academic Torrents feeds, or paste an RSS
+   feed URL. Torznab/Jackett remains under advanced options.
 3. Select **Add magnet**, review the populated Library form, then confirm.
-4. Optionally add a local Torznab endpoint from Jackett or Prowlarr.
-5. Authorize with Pubky Ring to publish releases or public tag claims.
+4. Authorize with Pubky Ring to publish releases or public tag claims.
 
 External catalog descriptions and categories are untrusted hints. Torrent hashes
 prove byte consistency, not authorship, legality, or safety.

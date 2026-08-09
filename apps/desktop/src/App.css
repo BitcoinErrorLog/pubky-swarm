@@ -421,7 +421,31 @@ code {
 
 .catalog-sources, .catalog-search { margin-bottom: 18px; padding: 24px; }
 .source-policy { margin: 12px 0 17px; color: var(--muted); font-size: 0.72rem; line-height: 1.5; }
+.preset-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.preset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.preset-row.disabled { opacity: 0.72; }
+.preset-row strong { display: block; margin-bottom: 4px; font-size: 0.9rem; }
+.preset-row p { margin: 0; color: var(--muted); font-size: 0.7rem; line-height: 1.45; }
+.feed-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(160px, 0.6fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.feed-form label { display: flex; flex-direction: column; gap: 7px; }
+.feed-form .wide { grid-column: 1 / -1; }
+.advanced-source { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
 .source-list { display: flex; flex-direction: column; gap: 8px; }
+.source-list h3 { margin: 8px 0 0; font-size: 0.85rem; }
 .source-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -591,7 +615,7 @@ code {
   .workspace { margin-left: 82px; }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .qbit-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .source-form, .source-form:has(label:nth-of-type(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .source-form, .source-form:has(label:nth-of-type(4)), .feed-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 680px) {
@@ -617,7 +641,7 @@ code {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .input-action, .file-import-row, .source-field { grid-template-columns: 1fr; }
   .qbit-form { grid-template-columns: 1fr; }
-  .source-form, .source-form:has(label:nth-of-type(4)), .source-row { grid-template-columns: 1fr; }
+  .source-form, .source-form:has(label:nth-of-type(4)), .source-row, .feed-form, .preset-row { grid-template-columns: 1fr; }
   .source-actions { justify-content: flex-start; }
   .external-catalog-results article > header, .external-catalog-results article > footer { align-items: stretch; flex-direction: column; }
   .tag-publisher { width: 100%; justify-content: stretch; }

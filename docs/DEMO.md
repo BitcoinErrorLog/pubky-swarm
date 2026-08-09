@@ -18,11 +18,11 @@ npm run tauri dev
 
 ## External catalogs and tagging
 
-1. Open Discover. The built-in Academic Torrents recent feed is already
-   enabled.
-2. Optionally add a credential-free RSS endpoint, or a Torznab endpoint from a
-   local Jackett/Prowlarr instance. Enter its API key separately; it is held only
-   for the current app session.
+1. Open Discover. Curated Academic Torrents feeds are listed; Recent is enabled
+   by default. Toggle other collections or paste an HTTPS RSS feed URL.
+2. Optionally open advanced Torznab and connect a local Jackett/Prowlarr
+   endpoint. Enter its API key separately; it is held only for the current app
+   session.
 3. Search enabled catalogs. One unavailable source does not discard successful
    results from other sources.
 4. Select **Add magnet**. Confirm the populated magnet in Library to begin the

@@ -25,7 +25,7 @@ use swarm_protocol::{
     InfoHashV1, PublisherId, ReleaseFile, ReleaseV1, SourceAttribution, SubjectRef, TagClaimV1,
     TagOperation, TorrentRef, TorrentV1,
 };
-use swarm_store::{CatalogSource, ClientSettings, Store};
+use swarm_store::{BUILT_IN_RSS_PRESETS, CatalogSource, ClientSettings, Store};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tokio::io::AsyncReadExt;
@@ -168,6 +168,22 @@ struct AddCatalogSourceRequest {
     endpoint: String,
     requires_api_key: bool,
     api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddRssFeedRequest {
+    feed_url: String,
+    name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RssPresetInfo {
+    name: String,
+    endpoint: String,
+    enabled_by_default: bool,
+    description: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -438,6 +454,37 @@ async fn list_external_catalog_sources(
             })
         })
         .collect()
+}
+
+#[tauri::command]
+fn list_rss_presets() -> Vec<RssPresetInfo> {
+    BUILT_IN_RSS_PRESETS
+        .iter()
+        .map(|preset| RssPresetInfo {
+            name: preset.name.to_owned(),
+            endpoint: preset.endpoint.to_owned(),
+            enabled_by_default: preset.enabled_by_default,
+            description: preset.description.to_owned(),
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn add_rss_feed(
+    request: AddRssFeedRequest,
+    state: State<'_, AppState>,
+) -> Result<CatalogSourceStatus, String> {
+    let source = state
+        .store
+        .add_rss_feed(
+            &request.feed_url,
+            request.name.as_deref(),
+        )
+        .map_err(display_error)?;
+    Ok(CatalogSourceStatus {
+        has_api_key: false,
+        source,
+    })
 }
 
 #[tauri::command]
@@ -1628,6 +1675,8 @@ pub fn run() {
             list_releases,
             search_catalog,
             list_external_catalog_sources,
+            list_rss_presets,
+            add_rss_feed,
             add_external_catalog_source,
             set_external_catalog_source_enabled,
             set_external_catalog_api_key,

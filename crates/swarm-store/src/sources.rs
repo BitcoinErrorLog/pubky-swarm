@@ -1,10 +1,64 @@
 //! Persistent opt-in external catalog source configuration.
 
 use catalog_client::{MAX_SOURCES, SourceKind, validate_source_url};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
+use url::Url;
 
 use crate::{Error, Result, Store, unix_millis};
+
+/// One shipped RSS preset. Inserted as `built_in` on migrate / open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltInRssPreset {
+    /// Display name shown in Discover.
+    pub name: &'static str,
+    /// Credential-free HTTPS RSS endpoint.
+    pub endpoint: &'static str,
+    /// Whether new installs enable this feed by default.
+    pub enabled_by_default: bool,
+    /// Short non-authoritative description for the UI.
+    pub description: &'static str,
+}
+
+/// Curated public RSS feeds (open research / public datasets). Not scrapers.
+pub const BUILT_IN_RSS_PRESETS: &[BuiltInRssPreset] = &[
+    BuiltInRssPreset {
+        name: "Academic Torrents — Recent",
+        endpoint: "https://academictorrents.com/rss.xml",
+        enabled_by_default: true,
+        description: "Latest public research datasets and papers on Academic Torrents.",
+    },
+    BuiltInRssPreset {
+        name: "Academic Torrents — Deep Learning",
+        endpoint: "https://academictorrents.com/collection/deep-learning.xml",
+        enabled_by_default: false,
+        description: "Deep-learning datasets mirrored through Academic Torrents.",
+    },
+    BuiltInRssPreset {
+        name: "Academic Torrents — Computer Vision",
+        endpoint: "https://academictorrents.com/collection/computer-vision.xml",
+        enabled_by_default: false,
+        description: "Computer-vision datasets from the Academic Torrents collection.",
+    },
+    BuiltInRssPreset {
+        name: "Academic Torrents — Medical",
+        endpoint: "https://academictorrents.com/collection/medical.xml",
+        enabled_by_default: false,
+        description: "Medical and life-sciences datasets on Academic Torrents.",
+    },
+    BuiltInRssPreset {
+        name: "Academic Torrents — Video Lectures",
+        endpoint: "https://academictorrents.com/collection/video-lectures.xml",
+        enabled_by_default: false,
+        description: "Academic video lectures distributed as torrents.",
+    },
+    BuiltInRssPreset {
+        name: "Academic Torrents — English Wikipedia",
+        endpoint: "https://academictorrents.com/collection/english-wikipedia.xml",
+        enabled_by_default: false,
+        description: "English Wikipedia dumps mirrored via Academic Torrents.",
+    },
+];
 
 /// One locally configured external catalog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,6 +80,27 @@ pub struct CatalogSource {
     pub requires_api_key: bool,
     /// Local creation time in Unix milliseconds.
     pub added_at: u64,
+}
+
+/// Insert any missing built-in RSS presets without changing existing rows.
+pub(crate) fn ensure_built_in_rss_presets(connection: &Connection) -> Result<()> {
+    let mut insert = connection.prepare(
+        "INSERT INTO catalog_sources
+             (name, kind, endpoint, enabled, built_in, requires_api_key, added_at)
+         SELECT ?1, 'rss', ?2, ?3, 1, 0, ?4
+         WHERE NOT EXISTS (
+             SELECT 1 FROM catalog_sources WHERE endpoint = ?2
+         )",
+    )?;
+    for preset in BUILT_IN_RSS_PRESETS {
+        insert.execute(params![
+            preset.name,
+            preset.endpoint,
+            i64::from(preset.enabled_by_default),
+            1_i64,
+        ])?;
+    }
+    Ok(())
 }
 
 impl Store {
@@ -69,6 +144,20 @@ impl Store {
         drop(connection);
         self.catalog_source(id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows.into())
+    }
+
+    /// Add an RSS feed from a pasted URL, deriving a name when none is given.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Store::add_catalog_source`].
+    pub fn add_rss_feed(&self, feed_url: &str, name: Option<&str>) -> Result<CatalogSource> {
+        let endpoint = validate_source_url(feed_url)?;
+        let resolved_name = match name.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => validate_name(value)?,
+            None => validate_name(&default_feed_name(&endpoint))?,
+        };
+        self.add_catalog_source(&resolved_name, SourceKind::Rss, endpoint.as_str(), false)
     }
 
     /// List external catalogs in stable insertion order.
@@ -190,6 +279,22 @@ fn validate_name(value: &str) -> Result<String> {
     Ok(value.to_owned())
 }
 
+fn default_feed_name(endpoint: &Url) -> String {
+    let host = endpoint.host_str().unwrap_or("RSS feed");
+    let path = endpoint
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|segment| !segment.is_empty() && *segment != "/")
+        .unwrap_or("feed");
+    let cleaned = path.trim_end_matches(".xml").trim_end_matches(".rss");
+    let label = if cleaned.is_empty() || cleaned == "rss" || cleaned == "feed" {
+        host.to_owned()
+    } else {
+        format!("{host} — {cleaned}")
+    };
+    label.chars().take(100).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,9 +303,20 @@ mod tests {
     fn built_in_and_user_sources_round_trip() {
         let store = Store::in_memory().unwrap();
         let initial = store.catalog_sources().unwrap();
-        assert_eq!(initial.len(), 1);
-        assert!(initial[0].built_in);
+        assert_eq!(initial.len(), BUILT_IN_RSS_PRESETS.len());
+        assert!(initial.iter().all(|source| source.built_in));
         assert_eq!(initial[0].kind, SourceKind::Rss);
+        assert!(
+            initial
+                .iter()
+                .any(|source| source.endpoint == BUILT_IN_RSS_PRESETS[0].endpoint && source.enabled)
+        );
+        assert!(
+            initial
+                .iter()
+                .filter(|source| source.endpoint != BUILT_IN_RSS_PRESETS[0].endpoint)
+                .all(|source| !source.enabled)
+        );
 
         let source = store
             .add_catalog_source(
@@ -221,6 +337,21 @@ mod tests {
             store.remove_catalog_source(initial[0].id),
             Err(Error::BuiltInCatalogSource)
         ));
+    }
+
+    #[test]
+    fn add_rss_feed_derives_name_from_url() {
+        let store = Store::in_memory().unwrap();
+        let source = store
+            .add_rss_feed(
+                "https://example.org/public/open-datasets.xml",
+                None,
+            )
+            .unwrap();
+        assert_eq!(source.name, "example.org — open-datasets");
+        assert_eq!(source.kind, SourceKind::Rss);
+        assert!(!source.built_in);
+        assert!(source.enabled);
     }
 
     #[test]
@@ -246,5 +377,16 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn ensure_presets_is_idempotent() {
+        let store = Store::in_memory().unwrap();
+        let before = store.catalog_sources().unwrap();
+        {
+            let connection = store.connection().unwrap();
+            ensure_built_in_rss_presets(&connection).unwrap();
+        }
+        assert_eq!(store.catalog_sources().unwrap(), before);
     }
 }

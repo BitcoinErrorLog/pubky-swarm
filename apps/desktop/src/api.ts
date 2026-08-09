@@ -3,6 +3,7 @@ import type {
   AuthStart,
   AuthStatus,
   AddExternalCatalogSourceRequest,
+  AddRssFeedRequest,
   CreateReleaseRequest,
   ExternalCatalogSearchResponse,
   ExternalCatalogSource,
@@ -13,6 +14,7 @@ import type {
   QbittorrentStatus,
   QbittorrentTorrent,
   ReleaseV1,
+  RssPresetInfo,
   TorrentSummary,
   ClientSettings,
   EngineStatus,
@@ -31,6 +33,9 @@ export const api = {
     invoke<ReleaseV1[]>("search_catalog", { query, limit }),
   externalCatalogSources: () =>
     invoke<ExternalCatalogSource[]>("list_external_catalog_sources"),
+  rssPresets: () => invoke<RssPresetInfo[]>("list_rss_presets"),
+  addRssFeed: (request: AddRssFeedRequest) =>
+    invoke<ExternalCatalogSource>("add_rss_feed", { request }),
   addExternalCatalogSource: (request: AddExternalCatalogSourceRequest) =>
     invoke<ExternalCatalogSource>("add_external_catalog_source", { request }),
   setExternalCatalogSourceEnabled: (sourceId: number, enabled: boolean) =>

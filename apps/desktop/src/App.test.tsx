@@ -20,6 +20,8 @@ const apiMock = vi.hoisted(() => ({
   settings: vi.fn(),
   engineStatus: vi.fn(),
   updateSettings: vi.fn(),
+  rssPresets: vi.fn(),
+  addRssFeed: vi.fn(),
 }));
 
 const eventMock = vi.hoisted(() => ({
@@ -77,6 +79,23 @@ beforeEach(() => {
     addedAt: 1,
     hasApiKey: false,
   }]);
+  apiMock.rssPresets.mockResolvedValue([{
+    name: "Academic Torrents — Recent",
+    endpoint: "https://academictorrents.com/rss.xml",
+    enabledByDefault: true,
+    description: "Latest public research datasets and papers on Academic Torrents.",
+  }]);
+  apiMock.addRssFeed.mockResolvedValue({
+    id: 2,
+    name: "example.org — feed",
+    kind: "rss",
+    endpoint: "https://example.org/feed.xml",
+    enabled: true,
+    builtIn: false,
+    requiresApiKey: false,
+    addedAt: 2,
+    hasApiKey: false,
+  });
   apiMock.searchCatalog.mockRejectedValue(new Error("optional discovery unavailable"));
   apiMock.searchExternalCatalogs.mockResolvedValue({
     results: [externalResult()],
@@ -228,6 +247,27 @@ describe("settings", () => {
         dhtEnabled: true,
         upnpEnabled: true,
       }));
+    });
+  });
+});
+
+describe("rss feeds", () => {
+  it("adds a pasted RSS feed URL from Discover", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Discover" }));
+    expect(await screen.findByText("RSS catalogs")).toBeInTheDocument();
+    await user.type(
+      screen.getByPlaceholderText("https://example.org/feed.xml"),
+      "https://example.org/open-research.xml",
+    );
+    await user.click(screen.getByRole("button", { name: "Add feed" }));
+
+    await waitFor(() => {
+      expect(apiMock.addRssFeed).toHaveBeenCalledWith({
+        feedUrl: "https://example.org/open-research.xml",
+      });
     });
   });
 });
