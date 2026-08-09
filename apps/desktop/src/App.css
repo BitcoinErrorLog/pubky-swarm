@@ -525,6 +525,24 @@ code {
 .publish-submit { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-top: 6px; }
 .publish-submit p { margin: 0; color: var(--muted); font-size: 0.7rem; }
 
+.settings-panel { margin-top: 0; padding: 24px; }
+.settings-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.settings-form label { display: flex; flex-direction: column; gap: 7px; }
+.settings-form .wide { grid-column: span 2; }
+.settings-form small { color: var(--muted); font-size: 0.68rem; line-height: 1.4; }
+.settings-form .toggle-field {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.settings-form .toggle-field input { margin-top: 3px; }
+.settings-form .toggle-field span { display: flex; flex-direction: column; gap: 4px; }
+.settings-form .toggle-field strong { font-size: 0.86rem; }
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

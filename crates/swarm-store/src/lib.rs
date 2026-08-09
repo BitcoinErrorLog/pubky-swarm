@@ -11,12 +11,14 @@ use rusqlite::{Connection, OptionalExtension, params};
 use swarm_protocol::{PublisherId, ReleaseV1};
 
 mod catalog;
+mod settings;
 mod sources;
 
 pub use catalog::BlocklistSubscription;
+pub use settings::{ClientSettings, MAX_LIMIT_KBPS};
 pub use sources::CatalogSource;
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// Persistent cache failures.
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +59,9 @@ pub enum Error {
     /// Catalog source endpoint or kind is invalid.
     #[error(transparent)]
     Catalog(#[from] catalog_client::Error),
+    /// Client settings failed validation.
+    #[error("invalid client settings: {0}")]
+    InvalidClientSettings(String),
     /// On-disk schema was created by a newer unsupported application.
     #[error("unsupported store schema {found}; maximum supported is {supported}")]
     UnsupportedSchema {
@@ -300,6 +305,10 @@ fn migrate(connection: &mut Connection) -> Result<()> {
     }
     if version == 2 {
         migrate_v3(connection)?;
+        version = 3;
+    }
+    if version == 3 {
+        migrate_v4(connection)?;
     }
     Ok(())
 }
@@ -434,6 +443,40 @@ fn migrate_v3(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v4(connection: &mut Connection) -> Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE client_settings (
+             id INTEGER PRIMARY KEY CHECK (id = 1),
+             download_dir TEXT CHECK (
+                 download_dir IS NULL
+                 OR (length(download_dir) BETWEEN 1 AND 4096)
+             ),
+             dht_enabled INTEGER NOT NULL CHECK (dht_enabled IN (0, 1)),
+             upnp_enabled INTEGER NOT NULL CHECK (upnp_enabled IN (0, 1)),
+             download_limit_kbps INTEGER CHECK (
+                 download_limit_kbps IS NULL
+                 OR (download_limit_kbps > 0 AND download_limit_kbps <= 1000000)
+             ),
+             upload_limit_kbps INTEGER CHECK (
+                 upload_limit_kbps IS NULL
+                 OR (upload_limit_kbps > 0 AND upload_limit_kbps <= 1000000)
+             ),
+             listen_port INTEGER CHECK (
+                 listen_port IS NULL
+                 OR (listen_port BETWEEN 1 AND 65535)
+             )
+         );
+         INSERT INTO client_settings (
+             id, download_dir, dht_enabled, upnp_enabled,
+             download_limit_kbps, upload_limit_kbps, listen_port
+         ) VALUES (1, NULL, 1, 1, NULL, NULL, NULL);
+         PRAGMA user_version = 4;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn unix_millis() -> Result<u64> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -481,7 +524,7 @@ mod tests {
         let bob = publisher(2);
         {
             let store = Store::open(&path).unwrap();
-            assert_eq!(store.schema_version().unwrap(), 3);
+            assert_eq!(store.schema_version().unwrap(), 4);
             store.follow(&alice).unwrap();
             store.follow(&bob).unwrap();
             store.set_cursor(&alice, 42).unwrap();
@@ -512,7 +555,7 @@ mod tests {
             Store::from_connection(connection),
             Err(Error::UnsupportedSchema {
                 found: 99,
-                supported: 3
+                supported: 4
             })
         ));
     }
@@ -576,10 +619,45 @@ mod tests {
 
         migrate(&mut connection).unwrap();
         let store = Store::from_connection(connection).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 3);
+        assert_eq!(store.schema_version().unwrap(), 4);
         assert_eq!(store.followed_publishers().unwrap(), vec![alice.clone()]);
         assert_eq!(store.cursor(&alice).unwrap(), Some(99));
         assert_eq!(store.releases_for(&alice).unwrap(), vec![cached]);
         assert!(store.blocklist_subscriptions().unwrap().is_empty());
+        assert_eq!(store.client_settings().unwrap(), ClientSettings::default());
+    }
+
+    #[test]
+    fn client_settings_round_trip_and_validation() {
+        let store = Store::in_memory().unwrap();
+        assert_eq!(store.client_settings().unwrap(), ClientSettings::default());
+
+        let mut settings = ClientSettings {
+            download_dir: Some(" /tmp/pubky-swarm-downloads ".to_owned()),
+            dht_enabled: false,
+            upnp_enabled: false,
+            download_limit_kbps: Some(0),
+            upload_limit_kbps: Some(512),
+            listen_port: Some(51413),
+        };
+        store.set_client_settings(&settings).unwrap();
+        settings.download_dir = Some("/tmp/pubky-swarm-downloads".to_owned());
+        settings.download_limit_kbps = None;
+        assert_eq!(store.client_settings().unwrap(), settings);
+
+        assert!(matches!(
+            store.set_client_settings(&ClientSettings {
+                listen_port: Some(0),
+                ..ClientSettings::default()
+            }),
+            Err(Error::InvalidClientSettings(_))
+        ));
+        assert!(matches!(
+            store.set_client_settings(&ClientSettings {
+                download_limit_kbps: Some(MAX_LIMIT_KBPS + 1),
+                ..ClientSettings::default()
+            }),
+            Err(Error::InvalidClientSettings(_))
+        ));
     }
 }

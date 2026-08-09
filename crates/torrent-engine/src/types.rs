@@ -81,11 +81,15 @@ pub struct EngineConfig {
     pub enable_upnp_port_forwarding: bool,
     /// Enable fastresume. Requires [`EngineConfig::persistence_dir`].
     pub fastresume: bool,
+    /// Session upload throttle in bytes per second. `None` or `0` means unlimited.
+    pub upload_bps: Option<u32>,
+    /// Session download throttle in bytes per second. `None` or `0` means unlimited.
+    pub download_bps: Option<u32>,
 }
 
 impl EngineConfig {
     /// Create a config with defaults: no persistence, DHT enabled, no `UPnP`,
-    /// default listen ports.
+    /// default listen ports, unlimited rates.
     #[must_use]
     pub fn new(download_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -96,6 +100,8 @@ impl EngineConfig {
             dht_mode: DhtMode::Persistent,
             enable_upnp_port_forwarding: false,
             fastresume: false,
+            upload_bps: None,
+            download_bps: None,
         }
     }
 }

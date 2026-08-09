@@ -25,7 +25,7 @@ use swarm_protocol::{
     InfoHashV1, PublisherId, ReleaseFile, ReleaseV1, SourceAttribution, SubjectRef, TagClaimV1,
     TagOperation, TorrentRef, TorrentV1,
 };
-use swarm_store::{CatalogSource, Store};
+use swarm_store::{CatalogSource, ClientSettings, Store};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tokio::io::AsyncReadExt;
@@ -51,8 +51,18 @@ struct AppState {
     catalog_api_keys: RwLock<HashMap<i64, String>>,
     tag_publish_lock: Mutex<()>,
     pending_magnet: std::sync::Mutex<Option<String>>,
+    preferred_download_dir: RwLock<Option<PathBuf>>,
+    /// Network settings the running engine was started with (for restart detection).
+    session_network: SessionNetwork,
     catalog_url: Option<Url>,
     http: reqwest::Client,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionNetwork {
+    dht_enabled: bool,
+    upnp_enabled: bool,
+    listen_port: Option<u16>,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,6 +202,25 @@ struct PublishCatalogTagsRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct EngineStatus {
+    download_dir: String,
+    listen_port: Option<u16>,
+    dht_enabled: bool,
+    upnp_enabled: bool,
+    download_limit_kbps: Option<u32>,
+    upload_limit_kbps: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateSettingsResponse {
+    settings: ClientSettings,
+    status: EngineStatus,
+    restart_required: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TorrentSummary {
     id: usize,
     info_hash: String,
@@ -274,6 +303,53 @@ fn take_pending_magnet(state: State<'_, AppState>) -> Result<Option<String>, Str
         .lock()
         .map_err(|_| "pending magnet lock poisoned".to_owned())
         .map(|mut pending| pending.take())
+}
+
+#[tauri::command]
+async fn get_settings(state: State<'_, AppState>) -> Result<ClientSettings, String> {
+    state.store.client_settings().map_err(display_error)
+}
+
+#[tauri::command]
+async fn get_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+    Ok(engine_status_from(&state))
+}
+
+#[tauri::command]
+async fn update_settings(
+    settings: ClientSettings,
+    state: State<'_, AppState>,
+) -> Result<UpdateSettingsResponse, String> {
+    let settings = settings.normalized();
+    settings.validate().map_err(display_error)?;
+    let preferred = resolve_preferred_download_dir(settings.download_dir.as_deref())?;
+    if let Some(path) = &preferred {
+        std::fs::create_dir_all(path).map_err(display_error)?;
+    }
+
+    let running = state.session_network;
+    let restart_required = settings.dht_enabled != running.dht_enabled
+        || settings.upnp_enabled != running.upnp_enabled
+        || settings.listen_port != running.listen_port;
+
+    state
+        .store
+        .set_client_settings(&settings)
+        .map_err(display_error)?;
+    *state.preferred_download_dir.write().await = preferred;
+
+    state
+        .engine
+        .set_download_bps(kbps_to_bps(settings.download_limit_kbps));
+    state
+        .engine
+        .set_upload_bps(kbps_to_bps(settings.upload_limit_kbps));
+
+    Ok(UpdateSettingsResponse {
+        settings,
+        status: engine_status_from(&state),
+        restart_required,
+    })
 }
 
 #[tauri::command]
@@ -689,12 +765,14 @@ async fn download_release(
         .await
         .map_err(display_error)?;
     let magnet = format!("magnet:?xt=urn:btih:{}", release.torrent().info_hash);
+    let output_dir = resolve_output_dir(None, &state).await?;
     let torrent = state
         .engine
         .add_magnet(
             &magnet,
             AddOptions {
                 only_files,
+                output_dir,
                 initial_peers: Some(peers),
                 disable_trackers: true,
                 ..AddOptions::default()
@@ -729,7 +807,7 @@ async fn import_magnet(
         } else {
             Vec::new()
         };
-    let output_dir = canonical_output_dir(request.save_path.as_deref())?;
+    let output_dir = resolve_output_dir(request.save_path.as_deref(), &state).await?;
     let torrent = state
         .engine
         .add_magnet(
@@ -761,7 +839,7 @@ async fn import_torrent_file(
         state.engine.config().metainfo_limits.max_metainfo_bytes,
     )
     .await?;
-    let output_dir = canonical_output_dir(request.save_path.as_deref())?;
+    let output_dir = resolve_output_dir(request.save_path.as_deref(), &state).await?;
     let torrent = state
         .engine
         .add_metainfo(
@@ -1205,6 +1283,99 @@ fn canonical_output_dir(value: Option<&str>) -> Result<Option<PathBuf>, String> 
     Ok(Some(path))
 }
 
+async fn resolve_output_dir(
+    override_path: Option<&str>,
+    state: &AppState,
+) -> Result<Option<PathBuf>, String> {
+    if let Some(path) = canonical_output_dir(override_path)? {
+        return Ok(Some(path));
+    }
+    Ok(state.preferred_download_dir.read().await.clone())
+}
+
+fn resolve_preferred_download_dir(value: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    if path.exists() {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("cannot open download directory {value:?}: {error}"))?;
+        if !path.is_dir() {
+            return Err(format!(
+                "download directory is not a directory: {}",
+                path.display()
+            ));
+        }
+        return Ok(Some(path));
+    }
+    std::fs::create_dir_all(&path)
+        .map_err(|error| format!("cannot create download directory {value:?}: {error}"))?;
+    path.canonicalize()
+        .map(Some)
+        .map_err(|error| format!("cannot open download directory {value:?}: {error}"))
+}
+
+fn kbps_to_bps(kbps: Option<u32>) -> Option<u32> {
+    kbps.and_then(|value| value.checked_mul(1024))
+}
+
+fn listen_port_range_from_settings(settings: &ClientSettings) -> Range<u16> {
+    if let Some(port) = settings.listen_port {
+        if port == u16::MAX {
+            return (port - 1)..port;
+        }
+        return port..(port + 1);
+    }
+    available_port_range()
+}
+
+fn engine_status_from(state: &AppState) -> EngineStatus {
+    let config = state.engine.config();
+    let settings = state.store.client_settings().unwrap_or_default();
+    EngineStatus {
+        download_dir: state
+            .preferred_download_dir
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .unwrap_or_else(|| config.download_dir.clone())
+            .display()
+            .to_string(),
+        listen_port: state.engine.listen_port(),
+        dht_enabled: state.session_network.dht_enabled,
+        upnp_enabled: state.session_network.upnp_enabled,
+        download_limit_kbps: settings.download_limit_kbps,
+        upload_limit_kbps: settings.upload_limit_kbps,
+    }
+}
+
+fn engine_config_from_settings(
+    default_download_dir: PathBuf,
+    persistence_dir: PathBuf,
+    settings: &ClientSettings,
+) -> Result<(EngineConfig, Option<PathBuf>), String> {
+    let preferred = resolve_preferred_download_dir(settings.download_dir.as_deref())?;
+    let download_dir = preferred
+        .clone()
+        .unwrap_or(default_download_dir);
+    std::fs::create_dir_all(&download_dir).map_err(display_error)?;
+    let mut engine_config = EngineConfig::new(download_dir);
+    engine_config.persistence_dir = Some(persistence_dir);
+    engine_config.fastresume = true;
+    engine_config.dht_mode = if settings.dht_enabled {
+        DhtMode::Persistent
+    } else {
+        DhtMode::Disabled
+    };
+    engine_config.enable_upnp_port_forwarding = settings.upnp_enabled;
+    engine_config.listen_port_range = Some(listen_port_range_from_settings(settings));
+    engine_config.download_bps = kbps_to_bps(settings.download_limit_kbps);
+    engine_config.upload_bps = kbps_to_bps(settings.upload_limit_kbps);
+    Ok((engine_config, preferred))
+}
+
 async fn read_bounded_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
     let file = tokio::fs::File::open(path).await.map_err(display_error)?;
     let declared_len = file.metadata().await.map_err(display_error)?.len();
@@ -1356,11 +1527,24 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn magnets_from_argv(argv: &[String]) -> Vec<Url> {
+    argv.iter()
+        .filter_map(|arg| Url::parse(arg).ok())
+        .filter(|url| url.scheme() == "magnet")
+        .collect()
+}
+
 fn application_builder() -> tauri::Builder<tauri::Wry> {
     let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(
-        |app, _argv, _working_directory| focus_main_window(app),
+        |app, argv, _working_directory| {
+            // Browser magnet clicks often launch a second process while Swarm is
+            // already open. The deep-link / Opened paths may not fire in that case;
+            // argv is the handoff that does.
+            queue_opened_magnets(app, magnets_from_argv(&argv));
+            focus_main_window(app);
+        },
     ));
     builder
 }
@@ -1388,19 +1572,20 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let mut engine_config = EngineConfig::new(data_dir.join("downloads"));
-            engine_config.persistence_dir = Some(data_dir.join("torrent-state"));
-            engine_config.fastresume = true;
-            engine_config.dht_mode = DhtMode::Disabled;
-            engine_config.listen_port_range = Some(available_port_range());
-            engine_config.enable_upnp_port_forwarding = true;
+            let store = Store::open(data_dir.join("swarm.sqlite3"))?;
+            let settings = store.client_settings()?;
+            let (engine_config, preferred_download_dir) = engine_config_from_settings(
+                data_dir.join("downloads"),
+                data_dir.join("torrent-state"),
+                &settings,
+            )
+            .map_err(|error| std::io::Error::other(error))?;
             let engine = Arc::new(tauri::async_runtime::block_on(TorrentEngine::new(
                 engine_config,
             ))?);
             let gateway = tauri::async_runtime::block_on(StreamGateway::start(engine.clone()))?;
             let discovery = PeerDiscovery::new(Dht::client()?.as_async());
             let adapter = PubkyAdapter::mainnet()?;
-            let store = Store::open(data_dir.join("swarm.sqlite3"))?;
             let catalog_url = configured_catalog_url()?;
             app.manage(AppState {
                 adapter,
@@ -1414,6 +1599,12 @@ pub fn run() {
                 catalog_api_keys: RwLock::new(HashMap::new()),
                 tag_publish_lock: Mutex::new(()),
                 pending_magnet: std::sync::Mutex::new(None),
+                preferred_download_dir: RwLock::new(preferred_download_dir),
+                session_network: SessionNetwork {
+                    dht_enabled: settings.dht_enabled,
+                    upnp_enabled: settings.upnp_enabled,
+                    listen_port: settings.listen_port,
+                },
                 catalog_url,
                 http: http_client()?,
             });
@@ -1430,6 +1621,9 @@ pub fn run() {
             poll_auth,
             get_auth_status,
             take_pending_magnet,
+            get_settings,
+            get_engine_status,
+            update_settings,
             get_profile,
             list_releases,
             search_catalog,
@@ -1504,6 +1698,19 @@ mod tests {
         );
         assert_eq!(normalize_api_key(Some(" ".to_owned())).unwrap(), None);
         assert!(normalize_api_key(Some("x".repeat(513))).is_err());
+    }
+
+    #[test]
+    fn single_instance_argv_extracts_magnet_urls() {
+        let hash = "3CA6678F769E5D37076F56EE935B84D3C28BF14E";
+        let magnet = format!("magnet:?xt=urn:btih:{hash}&dn=Shared");
+        let urls = magnets_from_argv(&[
+            "/Applications/Pubky Swarm.app/Contents/MacOS/Pubky Swarm".to_owned(),
+            magnet.clone(),
+            "--flag".to_owned(),
+        ]);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(first_valid_magnet(urls), Some(magnet));
     }
 
     #[test]

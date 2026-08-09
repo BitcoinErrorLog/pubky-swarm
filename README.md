@@ -207,6 +207,8 @@ services/seeder/           Bounded pinning and BEP 46 reannouncement
   libtorrent bridge is implemented as a constrained migration/parity spike, not
   yet the default engine.
 - Web seeds are not supported by the current librqbit backend.
+- Desktop and seeder sessions enable Mainline DHT by default so completed
+  torrents can announce and discover peers without relying only on trackers.
 - Production dataset-head signing still needs a trusted live-signing flow from
   Pubky Ring. Current BEP 46 proofs use isolated test identities.
 - Search availability does not imply payload availability. If every peer holding

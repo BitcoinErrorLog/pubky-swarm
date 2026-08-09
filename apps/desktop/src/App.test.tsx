@@ -17,6 +17,9 @@ const apiMock = vi.hoisted(() => ({
   searchExternalCatalogs: vi.fn(),
   importMagnet: vi.fn(),
   publishCatalogTags: vi.fn(),
+  settings: vi.fn(),
+  engineStatus: vi.fn(),
+  updateSettings: vi.fn(),
 }));
 
 const eventMock = vi.hoisted(() => ({
@@ -98,6 +101,34 @@ beforeEach(() => {
     files: [],
   });
   apiMock.publishCatalogTags.mockResolvedValue(["public-domain", "research"]);
+  apiMock.settings.mockResolvedValue({
+    downloadDir: null,
+    dhtEnabled: true,
+    upnpEnabled: true,
+    downloadLimitKbps: null,
+    uploadLimitKbps: null,
+    listenPort: null,
+  });
+  apiMock.engineStatus.mockResolvedValue({
+    downloadDir: "/tmp/downloads",
+    listenPort: 51413,
+    dhtEnabled: true,
+    upnpEnabled: true,
+    downloadLimitKbps: null,
+    uploadLimitKbps: null,
+  });
+  apiMock.updateSettings.mockImplementation(async (settings) => ({
+    settings,
+    status: {
+      downloadDir: settings.downloadDir || "/tmp/downloads",
+      listenPort: 51413,
+      dhtEnabled: settings.dhtEnabled,
+      upnpEnabled: settings.upnpEnabled,
+      downloadLimitKbps: settings.downloadLimitKbps,
+      uploadLimitKbps: settings.uploadLimitKbps,
+    },
+    restartRequired: false,
+  }));
   eventMock.callbacks.length = 0;
 });
 
@@ -173,6 +204,30 @@ describe("external catalog workflow", () => {
         infoHash,
         ["Research", "public-domain"],
       );
+    });
+  });
+});
+
+describe("settings", () => {
+  it("loads defaults and saves an upload limit", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("Transfers and network")).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.settings).toHaveBeenCalled());
+
+    const upload = screen.getByLabelText("Upload limit (KB/s)");
+    await user.clear(upload);
+    await user.type(upload, "256");
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+        uploadLimitKbps: 256,
+        dhtEnabled: true,
+        upnpEnabled: true,
+      }));
     });
   });
 });

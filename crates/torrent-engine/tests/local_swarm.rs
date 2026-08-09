@@ -55,15 +55,10 @@ fn free_tcp_port_range() -> std::ops::Range<u16> {
 
 /// Engine config for local tests: OS-assigned listen port range, no DHT.
 fn local_config(download_dir: std::path::PathBuf) -> EngineConfig {
-    EngineConfig {
-        download_dir,
-        persistence_dir: None,
-        listen_port_range: Some(free_tcp_port_range()),
-        dht_mode: DhtMode::Disabled,
-        enable_upnp_port_forwarding: false,
-        fastresume: false,
-        metainfo_limits: torrent_engine::MetainfoLimits::default(),
-    }
+    let mut config = EngineConfig::new(download_dir);
+    config.listen_port_range = Some(free_tcp_port_range());
+    config.dht_mode = DhtMode::Disabled;
+    config
 }
 
 /// Full create → seed → leech → selective-download → stream cycle.

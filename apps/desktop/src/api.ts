@@ -14,6 +14,9 @@ import type {
   QbittorrentTorrent,
   ReleaseV1,
   TorrentSummary,
+  ClientSettings,
+  EngineStatus,
+  UpdateSettingsResponse,
 } from "./types";
 
 export const api = {
@@ -93,4 +96,8 @@ export const api = {
     invoke<TorrentSummary>("import_completed_qbittorrent_torrent", { hash }),
   streamUrl: (torrentId: number, fileIndex: number) =>
     invoke<string>("get_stream_url", { torrentId, fileIndex }),
+  settings: () => invoke<ClientSettings>("get_settings"),
+  engineStatus: () => invoke<EngineStatus>("get_engine_status"),
+  updateSettings: (settings: ClientSettings) =>
+    invoke<UpdateSettingsResponse>("update_settings", { settings }),
 };

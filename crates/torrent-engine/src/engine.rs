@@ -1,10 +1,12 @@
 //! The torrent engine: a `librqbit` session plus torrent lifecycle operations.
 
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 
 use librqbit::api::TorrentIdOrHash;
+use librqbit::limits::LimitsConfig;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Magnet, Session, SessionOptions,
     SessionPersistenceConfig,
@@ -17,6 +19,10 @@ use crate::types::{
 };
 use crate::validate::{file_count, validate_metainfo};
 use crate::{Error, Result};
+
+fn nonzero_bps(bps: Option<u32>) -> Option<NonZeroU32> {
+    bps.and_then(NonZeroU32::new)
+}
 
 /// Validate an explicit piece length for torrent creation.
 fn validate_piece_length(piece_length: u32) -> Result<()> {
@@ -194,6 +200,10 @@ impl TorrentEngine {
             }),
             listen_port_range: config.listen_port_range.clone(),
             enable_upnp_port_forwarding: config.enable_upnp_port_forwarding,
+            ratelimits: LimitsConfig {
+                upload_bps: nonzero_bps(config.upload_bps),
+                download_bps: nonzero_bps(config.download_bps),
+            },
             ..Default::default()
         };
         let session = Session::new_with_opts(config.download_dir.clone(), options).await?;
@@ -216,6 +226,20 @@ impl TorrentEngine {
     #[must_use]
     pub fn listen_port(&self) -> Option<u16> {
         self.session.tcp_listen_port()
+    }
+
+    /// Update the session upload throttle. `None` or `0` means unlimited.
+    pub fn set_upload_bps(&self, bps: Option<u32>) {
+        self.session
+            .ratelimits
+            .set_upload_bps(nonzero_bps(bps));
+    }
+
+    /// Update the session download throttle. `None` or `0` means unlimited.
+    pub fn set_download_bps(&self, bps: Option<u32>) {
+        self.session
+            .ratelimits
+            .set_download_bps(nonzero_bps(bps));
     }
 
     /// Add a torrent from a magnet link (or a raw 40-char hex info hash).
@@ -660,6 +684,27 @@ mod tests {
             TorrentEngine::new(cfg).await,
             Err(Error::InvalidConfig(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_setters_accept_none_and_nonzero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = EngineConfig::new(tmp.path().join("dl"));
+        cfg.dht_mode = DhtMode::Disabled;
+        cfg.listen_port_range = Some({
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port..(port + 1)
+        });
+        cfg.upload_bps = Some(1024);
+        cfg.download_bps = Some(2048);
+        let engine = TorrentEngine::new(cfg).await.unwrap();
+        engine.set_upload_bps(None);
+        engine.set_upload_bps(Some(0));
+        engine.set_upload_bps(Some(4096));
+        engine.set_download_bps(Some(8192));
+        engine.shutdown().await;
     }
 
     #[tokio::test]

@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine_config = EngineConfig::new(config.data_dir.join("downloads"));
     engine_config.persistence_dir = Some(config.data_dir.join("torrent-state"));
     engine_config.fastresume = true;
-    engine_config.dht_mode = DhtMode::Disabled;
+    engine_config.dht_mode = DhtMode::Persistent;
     engine_config.listen_port_range = Some(available_port_range());
     engine_config.enable_upnp_port_forwarding = true;
     let engine = Arc::new(TorrentEngine::new(engine_config).await?);

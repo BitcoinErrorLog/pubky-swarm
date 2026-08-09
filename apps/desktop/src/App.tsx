@@ -8,6 +8,8 @@ import type {
   AuthStatus,
   CatalogSourceFailure,
   CatalogSourceKind,
+  ClientSettings,
+  EngineStatus,
   ExternalCatalogItem,
   ExternalCatalogSource,
   Profile,
@@ -18,11 +20,20 @@ import type {
 } from "./types";
 import "./App.css";
 
-type View = "library" | "discover" | "publish";
+type View = "library" | "discover" | "publish" | "settings";
 type Player = { url: string; name: string };
 type FileEditor = { torrent: TorrentSummary; selected: Set<number> };
 type ReleaseImport = { release: ReleaseV1; selected: Set<number> };
 type Removal = { torrent: TorrentSummary };
+
+const defaultSettings: ClientSettings = {
+  downloadDir: null,
+  dhtEnabled: true,
+  upnpEnabled: true,
+  downloadLimitKbps: null,
+  uploadLimitKbps: null,
+  listenPort: null,
+};
 
 const viewCopy: Record<View, { eyebrow: string; title: string; detail: string }> = {
   library: {
@@ -39,6 +50,11 @@ const viewCopy: Record<View, { eyebrow: string; title: string; detail: string }>
     eyebrow: "Your releases",
     title: "Publish",
     detail: "Create a torrent, seed it locally, and announce it under your Pubky.",
+  },
+  settings: {
+    eyebrow: "Torrent client",
+    title: "Settings",
+    detail: "Choose download location, speed limits, DHT, UPnP, and listen port.",
   },
 };
 
@@ -86,6 +102,12 @@ function App() {
   const [qbitPassword, setQbitPassword] = useState("");
   const [qbitAllowRemote, setQbitAllowRemote] = useState(false);
   const [qbitLibrary, setQbitLibrary] = useState<QbittorrentTorrent[]>([]);
+  const [settings, setSettings] = useState<ClientSettings>(defaultSettings);
+  const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
+  const [settingsRestartRequired, setSettingsRestartRequired] = useState(false);
+  const [downloadLimitDraft, setDownloadLimitDraft] = useState("");
+  const [uploadLimitDraft, setUploadLimitDraft] = useState("");
+  const [listenPortDraft, setListenPortDraft] = useState("");
 
   const refreshTorrents = useCallback(async (surfaceError = true) => {
     try {
@@ -109,6 +131,15 @@ function App() {
     api.qbittorrentStatus().then(setQbittorrent).catch(() => {
       setQbittorrent({ connected: false, version: null });
     });
+    api.settings()
+      .then((value) => {
+        setSettings(value);
+        setDownloadLimitDraft(value.downloadLimitKbps?.toString() ?? "");
+        setUploadLimitDraft(value.uploadLimitKbps?.toString() ?? "");
+        setListenPortDraft(value.listenPort?.toString() ?? "");
+      })
+      .catch((reason) => setError(errorMessage(reason)));
+    api.engineStatus().then(setEngineStatus).catch((reason) => setError(errorMessage(reason)));
     void refreshTorrents();
     void refreshExternalSources();
     const interval = window.setInterval(() => void refreshTorrents(false), 2_000);
@@ -396,6 +427,42 @@ function App() {
     if (typeof path === "string") setSavePath(path);
   }
 
+  async function pickSettingsDownloadDir() {
+    const path = await openDialog({ multiple: false, directory: true });
+    if (typeof path === "string") {
+      setSettings((current) => ({ ...current, downloadDir: path }));
+    }
+  }
+
+  async function saveSettings(event: FormEvent) {
+    event.preventDefault();
+    const downloadLimitKbps = parseOptionalLimit(downloadLimitDraft);
+    const uploadLimitKbps = parseOptionalLimit(uploadLimitDraft);
+    const listenPort = parseOptionalPort(listenPortDraft);
+    if (downloadLimitKbps === "invalid" || uploadLimitKbps === "invalid") {
+      setError("Speed limits must be blank, 0, or a positive whole number in KB/s.");
+      return;
+    }
+    if (listenPort === "invalid") {
+      setError("Listen port must be blank or a value from 1 to 65535.");
+      return;
+    }
+    await run("Saving torrent settings", async () => {
+      const response = await api.updateSettings({
+        ...settings,
+        downloadLimitKbps,
+        uploadLimitKbps,
+        listenPort,
+      });
+      setSettings(response.settings);
+      setEngineStatus(response.status);
+      setSettingsRestartRequired(response.restartRequired);
+      setDownloadLimitDraft(response.settings.downloadLimitKbps?.toString() ?? "");
+      setUploadLimitDraft(response.settings.uploadLimitKbps?.toString() ?? "");
+      setListenPortDraft(response.settings.listenPort?.toString() ?? "");
+    });
+  }
+
   async function pickSource(directory: boolean) {
     const path = await openDialog({ multiple: false, directory });
     if (typeof path === "string") {
@@ -519,7 +586,7 @@ function App() {
           <div><strong>Pubky Swarm</strong><span>Desktop alpha</span></div>
         </div>
         <nav aria-label="Primary navigation">
-          {(["library", "discover", "publish"] as View[]).map((item) => (
+          {(["library", "discover", "publish", "settings"] as View[]).map((item) => (
             <button
               key={item}
               className={view === item ? "active" : ""}
@@ -701,6 +768,26 @@ function App() {
               onDescriptionChange={setDescription}
               onTagsChange={setTags}
               onPublish={publish}
+            />
+          )}
+
+          {view === "settings" && (
+            <Settings
+              settings={settings}
+              engineStatus={engineStatus}
+              restartRequired={settingsRestartRequired}
+              downloadLimitDraft={downloadLimitDraft}
+              uploadLimitDraft={uploadLimitDraft}
+              listenPortDraft={listenPortDraft}
+              busy={Boolean(busy)}
+              onDownloadDirClear={() => setSettings((current) => ({ ...current, downloadDir: null }))}
+              onPickDownloadDir={() => void pickSettingsDownloadDir()}
+              onDhtChange={(value) => setSettings((current) => ({ ...current, dhtEnabled: value }))}
+              onUpnpChange={(value) => setSettings((current) => ({ ...current, upnpEnabled: value }))}
+              onDownloadLimitChange={setDownloadLimitDraft}
+              onUploadLimitChange={setUploadLimitDraft}
+              onListenPortChange={setListenPortDraft}
+              onSave={saveSettings}
             />
           )}
         </main>
@@ -1526,6 +1613,127 @@ function Publish({ auth, authUrl, sourcePath, title, description, tags, busy, on
   );
 }
 
+function Settings({
+  settings,
+  engineStatus,
+  restartRequired,
+  downloadLimitDraft,
+  uploadLimitDraft,
+  listenPortDraft,
+  busy,
+  onDownloadDirClear,
+  onPickDownloadDir,
+  onDhtChange,
+  onUpnpChange,
+  onDownloadLimitChange,
+  onUploadLimitChange,
+  onListenPortChange,
+  onSave,
+}: {
+  settings: ClientSettings;
+  engineStatus: EngineStatus | null;
+  restartRequired: boolean;
+  downloadLimitDraft: string;
+  uploadLimitDraft: string;
+  listenPortDraft: string;
+  busy: boolean;
+  onDownloadDirClear: () => void;
+  onPickDownloadDir: () => void;
+  onDhtChange: (value: boolean) => void;
+  onUpnpChange: (value: boolean) => void;
+  onDownloadLimitChange: (value: string) => void;
+  onUploadLimitChange: (value: string) => void;
+  onListenPortChange: (value: string) => void;
+  onSave: (event: FormEvent) => void;
+}) {
+  return (
+    <section className="panel settings-panel">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Client preferences</p>
+          <h2>Transfers and network</h2>
+        </div>
+      </div>
+      {restartRequired && (
+        <div className="notice working" role="status">
+          Restart Pubky Swarm to apply DHT, UPnP, or listen-port changes.
+        </div>
+      )}
+      <form className="settings-form" onSubmit={onSave}>
+        <label className="wide">
+          Default download folder
+          <div className="source-field">
+            <input
+              value={settings.downloadDir ?? ""}
+              readOnly
+              placeholder={engineStatus?.downloadDir || "App data downloads folder"}
+            />
+            <button className="secondary" type="button" onClick={onPickDownloadDir}>Choose folder</button>
+            <button className="secondary" type="button" onClick={onDownloadDirClear}>Use default</button>
+          </div>
+          <small>Applies to new transfers immediately. Existing torrents keep their current paths.</small>
+        </label>
+        <label>
+          Download limit (KB/s)
+          <input
+            value={downloadLimitDraft}
+            onChange={(event) => onDownloadLimitChange(event.target.value)}
+            inputMode="numeric"
+            placeholder="Unlimited"
+          />
+        </label>
+        <label>
+          Upload limit (KB/s)
+          <input
+            value={uploadLimitDraft}
+            onChange={(event) => onUploadLimitChange(event.target.value)}
+            inputMode="numeric"
+            placeholder="Unlimited"
+          />
+        </label>
+        <label>
+          Preferred listen port
+          <input
+            value={listenPortDraft}
+            onChange={(event) => onListenPortChange(event.target.value)}
+            inputMode="numeric"
+            placeholder="Auto"
+          />
+          <small>
+            Active port: {engineStatus?.listenPort ?? "unavailable"}
+          </small>
+        </label>
+        <label className="toggle-field">
+          <input
+            type="checkbox"
+            checked={settings.dhtEnabled}
+            onChange={(event) => onDhtChange(event.target.checked)}
+          />
+          <span>
+            <strong>Enable BitTorrent DHT</strong>
+            <small>Required for discovering and announcing peers without trackers.</small>
+          </span>
+        </label>
+        <label className="toggle-field">
+          <input
+            type="checkbox"
+            checked={settings.upnpEnabled}
+            onChange={(event) => onUpnpChange(event.target.checked)}
+          />
+          <span>
+            <strong>Enable UPnP port forwarding</strong>
+            <small>Helps peers connect inbound through compatible routers.</small>
+          </span>
+        </label>
+        <div className="wide publish-submit">
+          <p>Speed limits apply immediately. DHT, UPnP, and listen port need an app restart.</p>
+          <button className="primary" type="submit" disabled={busy}>Save settings</button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 function FileSelectionDialog({ title, description, files, selected, busy, confirmLabel, onChange, onCancel, onConfirm }: {
   title: string;
   description: string;
@@ -1668,10 +1876,29 @@ function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function parseOptionalLimit(value: string): number | null | "invalid" {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) return "invalid";
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return "invalid";
+  return parsed === 0 ? null : parsed;
+}
+
+function parseOptionalPort(value: string): number | null | "invalid" {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) return "invalid";
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 65535) return "invalid";
+  return parsed;
+}
+
 type IconProps = { name?: View };
 function NavIcon({ name }: IconProps) {
   if (name === "discover") return <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg>;
   if (name === "publish") return <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5" /><path d="M5 15v4h14v-4" /></svg>;
+  if (name === "settings") return <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></svg>;
   return <svg viewBox="0 0 24 24"><path d="M4 6h16v13H4z" /><path d="M8 6V4h8v2M8 11h8" /></svg>;
 }
 function AlertIcon() { return <svg viewBox="0 0 24 24"><path d="M12 4 3 20h18L12 4Z" /><path d="M12 9v5m0 3v.01" /></svg>; }

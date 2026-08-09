@@ -161,3 +161,27 @@ export type QbittorrentTorrent = {
   ratio: number;
   eta: number;
 };
+
+export type ClientSettings = {
+  downloadDir: string | null;
+  dhtEnabled: boolean;
+  upnpEnabled: boolean;
+  downloadLimitKbps: number | null;
+  uploadLimitKbps: number | null;
+  listenPort: number | null;
+};
+
+export type EngineStatus = {
+  downloadDir: string;
+  listenPort: number | null;
+  dhtEnabled: boolean;
+  upnpEnabled: boolean;
+  downloadLimitKbps: number | null;
+  uploadLimitKbps: number | null;
+};
+
+export type UpdateSettingsResponse = {
+  settings: ClientSettings;
+  status: EngineStatus;
+  restartRequired: boolean;
+};
