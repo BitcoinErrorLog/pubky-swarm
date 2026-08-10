@@ -1,6 +1,6 @@
 # Architecture
 
-Pubky Swarm keeps authority, discovery, and availability separate.
+Torky keeps authority, discovery, and availability separate.
 
 ```text
 Pubky identity

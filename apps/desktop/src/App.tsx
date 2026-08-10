@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
+import { AuthPanel, authExpired } from "./AuthPanel";
+import { ClaimChips, PublisherTags, TagPublishRow } from "./ClaimTags";
 import appIcon from "../app-icon.png";
 import type {
   AuthStatus,
@@ -17,6 +19,7 @@ import type {
   QbittorrentTorrent,
   ReleaseV1,
   RssPresetInfo,
+  SubjectTagClaim,
   TorrentSummary,
 } from "./types";
 import "./App.css";
@@ -38,14 +41,14 @@ const defaultSettings: ClientSettings = {
 
 const viewCopy: Record<View, { eyebrow: string; title: string; detail: string }> = {
   library: {
-    eyebrow: "Local swarm",
+    eyebrow: "Local library",
     title: "Library",
     detail: "Add, inspect, stream, and control every transfer from one place.",
   },
   discover: {
     eyebrow: "Pubky network",
     title: "Discover",
-    detail: "Resolve publishers and retrieve releases with authenticated metadata.",
+    detail: "Follow contacts, sync their releases and tag claims, and browse authenticated metadata.",
   },
   publish: {
     eyebrow: "Your releases",
@@ -63,9 +66,17 @@ function App() {
   const [view, setView] = useState<View>("library");
   const [auth, setAuth] = useState<AuthStatus>({ authenticated: false, user: null });
   const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [authStartedAt, setAuthStartedAt] = useState<number | null>(null);
+  const [showAuthPanel, setShowAuthPanel] = useState(false);
+  const [authCopied, setAuthCopied] = useState(false);
   const [publisher, setPublisher] = useState("");
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogResults, setCatalogResults] = useState<ReleaseV1[]>([]);
+  const [claimFilterMatches, setClaimFilterMatches] = useState<SubjectTagClaim[]>([]);
+  const [contactFeed, setContactFeed] = useState<ReleaseV1[]>([]);
+  const [subjectClaims, setSubjectClaims] = useState<Record<string, SubjectTagClaim[]>>({});
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
+  const [lastClaimCount, setLastClaimCount] = useState(0);
   const [externalSources, setExternalSources] = useState<ExternalCatalogSource[]>([]);
   const [externalResults, setExternalResults] = useState<ExternalCatalogItem[]>([]);
   const [externalFailures, setExternalFailures] = useState<CatalogSourceFailure[]>([]);
@@ -122,6 +133,38 @@ function App() {
     }
   }, []);
 
+  const refreshSubjectClaims = useCallback(async (infoHashes: string[]) => {
+    const unique = [...new Set(infoHashes.map((value) => value.trim().toLowerCase()).filter(Boolean))];
+    if (unique.length === 0) return;
+    const entries = await Promise.all(
+      unique.map(async (infoHash) => {
+        try {
+          return [infoHash, await api.listSubjectTags(infoHash)] as const;
+        } catch {
+          return [infoHash, [] as SubjectTagClaim[]] as const;
+        }
+      }),
+    );
+    setSubjectClaims((current) => {
+      const next = { ...current };
+      for (const [infoHash, claims] of entries) next[infoHash] = claims;
+      return next;
+    });
+  }, []);
+
+  const syncFollowedContacts = useCallback(async (surfaceError = true) => {
+    try {
+      const result = await api.syncFollowed();
+      setFollowed(result.followed);
+      setContactFeed(result.releases);
+      setLastClaimCount(result.claimCount);
+      setLastSyncAt(Date.now());
+      await refreshSubjectClaims(result.releases.map((release) => release.torrent.info_hash));
+    } catch (reason) {
+      if (surfaceError) setError(errorMessage(reason));
+    }
+  }, [refreshSubjectClaims]);
+
   const refreshExternalSources = useCallback(async (surfaceError = true) => {
     try {
       const [sources, presets] = await Promise.all([
@@ -152,9 +195,14 @@ function App() {
     api.engineStatus().then(setEngineStatus).catch((reason) => setError(errorMessage(reason)));
     void refreshTorrents();
     void refreshExternalSources();
-    const interval = window.setInterval(() => void refreshTorrents(false), 2_000);
-    return () => window.clearInterval(interval);
-  }, [refreshExternalSources, refreshTorrents]);
+    void syncFollowedContacts(false);
+    const torrentInterval = window.setInterval(() => void refreshTorrents(false), 2_000);
+    const syncInterval = window.setInterval(() => void syncFollowedContacts(false), 60_000);
+    return () => {
+      window.clearInterval(torrentInterval);
+      window.clearInterval(syncInterval);
+    };
+  }, [refreshExternalSources, refreshTorrents, syncFollowedContacts]);
 
   useEffect(() => {
     let active = true;
@@ -168,7 +216,7 @@ function App() {
       window.focus();
     };
 
-    void listen("pubky-swarm-magnet-opened", () => {
+    void listen("torky-magnet-opened", () => {
       void receivePendingMagnet().catch((reason) => {
         if (active) setError(`Could not read the incoming magnet link: ${errorMessage(reason)}`);
       });
@@ -199,14 +247,30 @@ function App() {
       try {
         const status = await api.pollAuth();
         setAuth(status);
-        if (status.authenticated) setAuthUrl(null);
+        if (status.authenticated) {
+          setAuthUrl(null);
+          setAuthStartedAt(null);
+          setShowAuthPanel(false);
+          setAuthCopied(false);
+        }
       } catch (reason) {
+        // Keep the QR/URL visible through transient poll errors.
         setError(errorMessage(reason));
-        setAuthUrl(null);
       }
     }, 2_000);
     return () => window.clearInterval(interval);
   }, [auth.authenticated, authUrl]);
+
+  useEffect(() => {
+    const hashes = [
+      ...torrents.map((torrent) => torrent.infoHash),
+      ...releases.map((release) => release.torrent.info_hash),
+      ...catalogResults.map((release) => release.torrent.info_hash),
+      ...contactFeed.map((release) => release.torrent.info_hash),
+      ...externalResults.flatMap((item) => (item.infoHash ? [item.infoHash] : [])),
+    ];
+    void refreshSubjectClaims(hashes);
+  }, [torrents, releases, catalogResults, contactFeed, externalResults, refreshSubjectClaims]);
 
   useEffect(() => {
     if (!releaseImport && !fileEditor && !removal) return;
@@ -243,11 +307,43 @@ function App() {
   }
 
   async function beginAuth() {
+    if (authUrl && !authExpired(authStartedAt)) {
+      setShowAuthPanel(true);
+      return;
+    }
     await run("Starting Pubky authorization", async () => {
       const result = await api.startAuth();
       setAuthUrl(result.authorization_url);
-      await openUrl(result.authorization_url);
+      setAuthStartedAt(Date.now());
+      setShowAuthPanel(true);
+      setAuthCopied(false);
+      try {
+        await openUrl(result.authorization_url);
+      } catch {
+        // QR/copy remain available when openUrl fails (e.g. no handler).
+      }
     });
+  }
+
+  async function restartAuth() {
+    setAuthUrl(null);
+    setAuthStartedAt(null);
+    await beginAuth();
+  }
+
+  async function signOut() {
+    await run("Signing out", async () => {
+      setAuth(await api.signOut());
+      setAuthUrl(null);
+      setAuthStartedAt(null);
+      setShowAuthPanel(false);
+      setAuthCopied(false);
+    });
+  }
+
+  function openAuthPanel() {
+    setShowAuthPanel(true);
+    if (!auth.authenticated && !authUrl) void beginAuth();
   }
 
   async function discover(event: FormEvent) {
@@ -269,17 +365,27 @@ function App() {
     if (!target) return;
     await run("Following publisher", async () => {
       setFollowed(await api.follow(target));
+      await syncFollowedContacts(false);
+    });
+  }
+
+  async function unfollowContact(user: string) {
+    await run("Unfollowing publisher", async () => {
+      setFollowed(await api.unfollow(user));
+      await syncFollowedContacts(false);
     });
   }
 
   async function searchCatalog(event: FormEvent) {
     event.preventDefault();
     await run("Searching enabled catalogs", async () => {
-      const [pubky, external] = await Promise.allSettled([
+      const [pubky, external, claims] = await Promise.allSettled([
         api.searchCatalog(catalogQuery),
         api.searchExternalCatalogs(catalogQuery),
+        api.searchCachedTagClaims(catalogQuery),
       ]);
       setCatalogResults(pubky.status === "fulfilled" ? pubky.value : []);
+      setClaimFilterMatches(claims.status === "fulfilled" ? claims.value : []);
       const failures: CatalogSourceFailure[] = [];
       if (pubky.status === "rejected") {
         failures.push({
@@ -372,14 +478,23 @@ function App() {
 
   async function publishExternalTags(item: ExternalCatalogItem) {
     if (!item.infoHash) return;
-    const draft = catalogTagDrafts[item.infoHash] || "";
-    await run(`Publishing tags for ${item.title}`, async () => {
+    await publishSubjectTags(item.infoHash);
+  }
+
+  async function publishSubjectTags(infoHash: string, draftKey = infoHash) {
+    const draft = catalogTagDrafts[draftKey] || "";
+    if (!auth.authenticated) {
+      openAuthPanel();
+      return;
+    }
+    await run(`Publishing tags for ${shortHash(infoHash)}`, async () => {
       const published = await api.publishCatalogTags(
-        item.infoHash as string,
+        infoHash,
         draft.split(",").map((tag) => tag.trim()).filter(Boolean),
       );
-      setPublishedCatalogTags((current) => ({ ...current, [item.infoHash as string]: published }));
-      setCatalogTagDrafts((current) => ({ ...current, [item.infoHash as string]: "" }));
+      setPublishedCatalogTags((current) => ({ ...current, [infoHash]: published }));
+      setCatalogTagDrafts((current) => ({ ...current, [draftKey]: "" }));
+      await refreshSubjectClaims([infoHash]);
     });
   }
 
@@ -396,9 +511,12 @@ function App() {
       setTitle("");
       setDescription("");
       setTags("");
-      if (publisher === auth.user) setReleases((current) => [release, ...current]);
+      if (auth.user) setPublisher(auth.user);
+      setReleases((current) => [release, ...current.filter((item) => item.id !== release.id)]);
+      setContactFeed((current) => [release, ...current.filter((item) => item.id !== release.id)]);
       await refreshTorrents();
-      setView("library");
+      await syncFollowedContacts(false);
+      setView("discover");
     });
   }
 
@@ -606,7 +724,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <img className="brand-mark" src={appIcon} alt="" />
-          <div><strong>Pubky Swarm</strong><span>Desktop alpha</span></div>
+          <div><strong>Torky</strong><span>Desktop alpha</span></div>
         </div>
         <nav aria-label="Primary navigation">
           {(["library", "discover", "publish", "settings"] as View[]).map((item) => (
@@ -626,7 +744,30 @@ function App() {
           <span className="status-dot" />
           <div>
             <strong>{auth.authenticated ? "Publisher connected" : "Pubky not connected"}</strong>
-            <span>{auth.user ? shortKey(auth.user) : "Connect to publish releases"}</span>
+            <span>
+              {auth.user
+                ? shortKey(auth.user)
+                : authUrl
+                  ? "Waiting for Ring approval"
+                  : "Connect to publish and tag"}
+            </span>
+            {!auth.authenticated && (
+              <span className="session-note">Session ends when you quit</span>
+            )}
+            {auth.authenticated && (
+              <span className="session-note">Session ends when you quit</span>
+            )}
+          </div>
+          <div className="identity-actions">
+            {auth.authenticated ? (
+              <button className="secondary compact" type="button" disabled={Boolean(busy)} onClick={() => void signOut()}>
+                Sign out
+              </button>
+            ) : (
+              <button className="primary compact" type="button" disabled={Boolean(busy)} onClick={() => void beginAuth()}>
+                {authUrl ? "Show QR" : "Connect"}
+              </button>
+            )}
           </div>
         </div>
       </aside>
@@ -659,6 +800,25 @@ function App() {
             </div>
           )}
 
+          {(showAuthPanel || Boolean(authUrl)) && !auth.authenticated && (
+            <AuthPanel
+              auth={auth}
+              authUrl={authUrl}
+              authStartedAt={authStartedAt}
+              busy={Boolean(busy)}
+              onAuth={() => void beginAuth()}
+              onCopy={() => setAuthCopied(true)}
+              onOpen={() => authUrl && void openUrl(authUrl)}
+              onRestart={() => void restartAuth()}
+              onSignOut={() => void signOut()}
+            />
+          )}
+          {authCopied && authUrl && (
+            <div className="notice working" role="status" data-testid="auth-copied">
+              Authorization URL copied
+            </div>
+          )}
+
           {view === "library" && (
             <Library
               torrents={torrents}
@@ -668,6 +828,14 @@ function App() {
               savePath={savePath}
               busy={Boolean(busy)}
               player={player}
+              authenticated={auth.authenticated}
+              subjectClaims={subjectClaims}
+              catalogTagDrafts={catalogTagDrafts}
+              onCatalogTagDraftChange={(infoHash, value) =>
+                setCatalogTagDrafts((current) => ({ ...current, [infoHash]: value }))
+              }
+              onPublishTags={(infoHash) => void publishSubjectTags(infoHash)}
+              onNeedAuth={openAuthPanel}
               onMagnetChange={setMagnet}
               onMagnetSubmit={importMagnet}
               onPickTorrent={pickTorrent}
@@ -749,11 +917,18 @@ function App() {
                 profile={profile}
                 releases={releases}
                 followed={followed}
+                contactFeed={contactFeed}
+                lastSyncAt={lastSyncAt}
+                lastClaimCount={lastClaimCount}
+                subjectClaims={subjectClaims}
+                claimFilterMatches={claimFilterMatches}
                 busy={Boolean(busy)}
                 authenticated={auth.authenticated}
                 onPublisherChange={setPublisher}
                 onDiscover={discover}
                 onFollowed={(value) => setPublisher(value)}
+                onUnfollow={(value) => void unfollowContact(value)}
+                onSyncFollowed={() => void syncFollowedContacts(true)}
                 onDownload={prepareRelease}
                 onHandoff={(release) => void handoffMagnet(releaseMagnet(release))}
                 qbittorrentConnected={qbittorrent.connected}
@@ -776,6 +951,8 @@ function App() {
                 onCatalogSearch={searchCatalog}
                 onPrepareExternalMagnet={prepareExternalMagnet}
                 onPublishExternalTags={(item) => void publishExternalTags(item)}
+                onPublishReleaseTags={(infoHash) => void publishSubjectTags(infoHash)}
+                onNeedAuth={openAuthPanel}
                 onOpenExternalDetails={(url) => void openUrl(url)}
                 onFollowPublisher={() => void followResolvedPublisher()}
               />
@@ -786,13 +963,17 @@ function App() {
             <Publish
               auth={auth}
               authUrl={authUrl}
+              authStartedAt={authStartedAt}
               sourcePath={sourcePath}
               title={title}
               description={description}
               tags={tags}
               busy={Boolean(busy)}
               onAuth={() => void beginAuth()}
-              onReopenAuth={() => authUrl && void openUrl(authUrl)}
+              onCopyAuth={() => setAuthCopied(true)}
+              onOpenAuth={() => authUrl && void openUrl(authUrl)}
+              onRestartAuth={() => void restartAuth()}
+              onSignOut={() => void signOut()}
               onSourceChange={setSourcePath}
               onPickSource={(directory) => void pickSource(directory)}
               onTitleChange={setTitle}
@@ -885,6 +1066,12 @@ type LibraryProps = {
   savePath: string;
   busy: boolean;
   player: Player | null;
+  authenticated: boolean;
+  subjectClaims: Record<string, SubjectTagClaim[]>;
+  catalogTagDrafts: Record<string, string>;
+  onCatalogTagDraftChange: (infoHash: string, value: string) => void;
+  onPublishTags: (infoHash: string) => void;
+  onNeedAuth: () => void;
   onMagnetChange: (value: string) => void;
   onMagnetSubmit: (event: FormEvent) => void;
   onPickTorrent: () => void;
@@ -1076,7 +1263,7 @@ function Library(props: LibraryProps) {
                   title={
                     torrent.progress < 1
                       ? "Complete this torrent in qBittorrent before importing"
-                      : "Recheck existing payload in Pubky Swarm"
+                      : "Recheck existing payload in Torky"
                   }
                   onClick={() =>
                     props.onImportQbittorrentTorrent(torrent.hash)
@@ -1118,6 +1305,12 @@ function Library(props: LibraryProps) {
                 key={torrent.id}
                 torrent={torrent}
                 busy={props.busy}
+                authenticated={props.authenticated}
+                claims={props.subjectClaims[torrent.infoHash] || []}
+                tagDraft={props.catalogTagDrafts[torrent.infoHash] || ""}
+                onTagDraftChange={(value) => props.onCatalogTagDraftChange(torrent.infoHash, value)}
+                onPublishTags={() => props.onPublishTags(torrent.infoHash)}
+                onNeedAuth={props.onNeedAuth}
                 onToggle={() => props.onToggle(torrent)}
                 onRemove={() => props.onRemove(torrent)}
                 onEditFiles={() => props.onEditFiles(torrent)}
@@ -1131,9 +1324,15 @@ function Library(props: LibraryProps) {
   );
 }
 
-function TorrentCard({ torrent, busy, onToggle, onRemove, onEditFiles, onPlay }: {
+function TorrentCard({ torrent, busy, authenticated, claims, tagDraft, onTagDraftChange, onPublishTags, onNeedAuth, onToggle, onRemove, onEditFiles, onPlay }: {
   torrent: TorrentSummary;
   busy: boolean;
+  authenticated: boolean;
+  claims: SubjectTagClaim[];
+  tagDraft: string;
+  onTagDraftChange: (value: string) => void;
+  onPublishTags: () => void;
+  onNeedAuth: () => void;
   onToggle: () => void;
   onRemove: () => void;
   onEditFiles: () => void;
@@ -1144,6 +1343,7 @@ function TorrentCard({ torrent, busy, onToggle, onRemove, onEditFiles, onPlay }:
     : 0;
   const included = torrent.files.filter((file) => file.included);
   const playable = included.filter((file) => isPlayable(file.path));
+  const magnet = `magnet:?xt=urn:btih:${torrent.infoHash}`;
   return (
     <article className="torrent-card">
       <div className="torrent-card-header">
@@ -1181,10 +1381,25 @@ function TorrentCard({ torrent, busy, onToggle, onRemove, onEditFiles, onPlay }:
         <Metric label="Ratio" value={safeNumber(torrent.ratio).toFixed(2)} />
       </div>
       <div className="torrent-footer">
-        <code title={torrent.infoHash}>{shortHash(torrent.infoHash)}</code>
+        <code title={torrent.infoHash}>btih:{shortHash(torrent.infoHash)}</code>
+        <button className="text-button" type="button" onClick={() => void navigator.clipboard.writeText(torrent.infoHash)}>
+          Copy infohash
+        </button>
+        <button className="text-button" type="button" onClick={() => void navigator.clipboard.writeText(magnet)}>
+          Copy magnet
+        </button>
         <span>{included.length} of {torrent.files.length} files</span>
         {torrent.files.length > 0 && <button className="text-button" onClick={onEditFiles}>Manage files</button>}
       </div>
+      <ClaimChips claims={claims} />
+      <TagPublishRow
+        draft={tagDraft}
+        authenticated={authenticated}
+        busy={busy}
+        onDraftChange={onTagDraftChange}
+        onPublish={onPublishTags}
+        onNeedAuth={onNeedAuth}
+      />
       {playable.length > 0 && (
         <div className="playable-files">
           {playable.map((file) => (
@@ -1434,16 +1649,23 @@ function CatalogSources({
   );
 }
 
-function Discover({ publisher, profile, releases, followed, busy, authenticated, onPublisherChange, onDiscover, onFollowed, onDownload, onHandoff, qbittorrentConnected, onSendQbittorrent, catalogQuery, catalogResults, externalResults, externalFailures, catalogTagDrafts, publishedCatalogTags, onCatalogTagDraftChange, onCatalogQueryChange, onCatalogSearch, onPrepareExternalMagnet, onPublishExternalTags, onOpenExternalDetails, onFollowPublisher }: {
+function Discover({ publisher, profile, releases, followed, contactFeed, lastSyncAt, lastClaimCount, subjectClaims, claimFilterMatches, busy, authenticated, onPublisherChange, onDiscover, onFollowed, onUnfollow, onSyncFollowed, onDownload, onHandoff, qbittorrentConnected, onSendQbittorrent, catalogQuery, catalogResults, externalResults, externalFailures, catalogTagDrafts, publishedCatalogTags, onCatalogTagDraftChange, onCatalogQueryChange, onCatalogSearch, onPrepareExternalMagnet, onPublishExternalTags, onPublishReleaseTags, onNeedAuth, onOpenExternalDetails, onFollowPublisher }: {
   publisher: string;
   profile: Profile | null;
   releases: ReleaseV1[];
   followed: string[];
+  contactFeed: ReleaseV1[];
+  lastSyncAt: number | null;
+  lastClaimCount: number;
+  subjectClaims: Record<string, SubjectTagClaim[]>;
+  claimFilterMatches: SubjectTagClaim[];
   busy: boolean;
   authenticated: boolean;
   onPublisherChange: (value: string) => void;
   onDiscover: (event: FormEvent) => void;
   onFollowed: (value: string) => void;
+  onUnfollow: (value: string) => void;
+  onSyncFollowed: () => void;
   onDownload: (release: ReleaseV1) => void;
   onHandoff: (release: ReleaseV1) => void;
   qbittorrentConnected: boolean;
@@ -1459,11 +1681,65 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
   onCatalogSearch: (event: FormEvent) => void;
   onPrepareExternalMagnet: (item: ExternalCatalogItem) => void;
   onPublishExternalTags: (item: ExternalCatalogItem) => void;
+  onPublishReleaseTags: (infoHash: string) => void;
+  onNeedAuth: () => void;
   onOpenExternalDetails: (url: string) => void;
   onFollowPublisher: () => void;
 }) {
   return (
     <>
+      <section className="panel contacts-panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Local follow graph</p>
+            <h2>Contacts</h2>
+          </div>
+          <button className="secondary compact" type="button" disabled={busy} onClick={onSyncFollowed}>
+            Sync now
+          </button>
+        </div>
+        <p className="contacts-meta">
+          {followed.length} followed
+          {lastSyncAt ? ` · last sync ${new Date(lastSyncAt).toLocaleTimeString()}` : ""}
+          {lastClaimCount > 0 ? ` · ${lastClaimCount} cached claims` : ""}
+        </p>
+        {followed.length === 0 ? (
+          <p className="claim-empty">Follow a publisher to sync their releases and tag claims.</p>
+        ) : (
+          <div className="contacts-list">
+            {followed.map((value) => (
+              <div key={value} className="contact-row">
+                <button type="button" onClick={() => onFollowed(value)}>{shortKey(value)}</button>
+                <button className="text-button" type="button" disabled={busy} onClick={() => onUnfollow(value)}>
+                  Unfollow
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {contactFeed.length > 0 && (
+          <div className="contact-feed">
+            <h3>Contact releases</h3>
+            {contactFeed.map((release) => (
+              <ReleaseBrowseCard
+                key={`feed:${release.publisher}:${release.id}`}
+                release={release}
+                claims={subjectClaims[release.torrent.info_hash] || []}
+                draft={catalogTagDrafts[release.torrent.info_hash] || ""}
+                authenticated={authenticated}
+                busy={busy}
+                qbittorrentConnected={qbittorrentConnected}
+                onDraftChange={(value) => onCatalogTagDraftChange(release.torrent.info_hash, value)}
+                onPublishTags={() => onPublishReleaseTags(release.torrent.info_hash)}
+                onNeedAuth={onNeedAuth}
+                onDownload={() => onDownload(release)}
+                onHandoff={() => onHandoff(release)}
+                onSendQbittorrent={() => onSendQbittorrent(release)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
       <section className="panel catalog-search">
         <div className="section-heading">
           <div>
@@ -1485,6 +1761,12 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
             </button>
           </div>
         </form>
+        {claimFilterMatches.length > 0 && (
+          <div className="claim-filter-results" role="status">
+            <h3>Cached claim matches</h3>
+            <ClaimChips claims={claimFilterMatches} />
+          </div>
+        )}
         {externalFailures.length > 0 && (
           <div className="source-failures" role="status">
             {externalFailures.map((failure) => (
@@ -1500,6 +1782,7 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
             {externalResults.map((item) => {
               const resultKey = `${item.sourceId}:${item.infoHash || item.magnet}`;
               const claimed = item.infoHash ? publishedCatalogTags[item.infoHash] || [] : [];
+              const claims = item.infoHash ? subjectClaims[item.infoHash] || [] : [];
               return (
                 <article key={resultKey}>
                   <header>
@@ -1521,6 +1804,7 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
                       {claimed.map((tag) => <span className="claimed" key={`claimed:${tag}`}>#{tag} · you</span>)}
                     </div>
                   )}
+                  <ClaimChips claims={claims} />
                   <footer>
                     <div>
                       {item.infoHash && <code>btih:{shortHash(item.infoHash)}</code>}
@@ -1531,22 +1815,14 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
                       )}
                     </div>
                     {item.infoHash && (
-                      <div className="tag-publisher">
-                        <input
-                          value={catalogTagDrafts[item.infoHash] || ""}
-                          onChange={(event) => onCatalogTagDraftChange(item.infoHash as string, event.target.value)}
-                          placeholder="public-domain, research"
-                          maxLength={512}
-                          disabled={!authenticated}
-                        />
-                        <button
-                          className="secondary compact"
-                          disabled={!authenticated || busy || !(catalogTagDrafts[item.infoHash] || "").trim()}
-                          onClick={() => onPublishExternalTags(item)}
-                        >
-                          Publish tags
-                        </button>
-                      </div>
+                      <TagPublishRow
+                        draft={catalogTagDrafts[item.infoHash] || ""}
+                        authenticated={authenticated}
+                        busy={busy}
+                        onDraftChange={(value) => onCatalogTagDraftChange(item.infoHash as string, value)}
+                        onPublish={() => onPublishExternalTags(item)}
+                        onNeedAuth={onNeedAuth}
+                      />
                     )}
                   </footer>
                 </article>
@@ -1558,27 +1834,21 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
           <div className="catalog-results">
             <h3>Pubky catalog results</h3>
             {catalogResults.map((release) => (
-              <div key={`${release.publisher}:${release.id}`}>
-                <span>
-                  <strong>{release.title}</strong>
-                  <small>
-                    {shortKey(release.publisher)} · {formatBytes(release.torrent.size)}
-                  </small>
-                </span>
-                <div>
-                  {qbittorrentConnected && (
-                    <button
-                      className="secondary compact"
-                      onClick={() => onSendQbittorrent(release)}
-                    >
-                      qBittorrent
-                    </button>
-                  )}
-                  <button className="primary" onClick={() => onDownload(release)}>
-                    Choose files
-                  </button>
-                </div>
-              </div>
+              <ReleaseBrowseCard
+                key={`catalog:${release.publisher}:${release.id}`}
+                release={release}
+                claims={subjectClaims[release.torrent.info_hash] || []}
+                draft={catalogTagDrafts[release.torrent.info_hash] || ""}
+                authenticated={authenticated}
+                busy={busy}
+                qbittorrentConnected={qbittorrentConnected}
+                onDraftChange={(value) => onCatalogTagDraftChange(release.torrent.info_hash, value)}
+                onPublishTags={() => onPublishReleaseTags(release.torrent.info_hash)}
+                onNeedAuth={onNeedAuth}
+                onDownload={() => onDownload(release)}
+                onHandoff={() => onHandoff(release)}
+                onSendQbittorrent={() => onSendQbittorrent(release)}
+              />
             ))}
           </div>
         )}
@@ -1598,12 +1868,6 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
             <button className="primary" type="submit" disabled={busy}>Resolve publisher</button>
           </div>
         </form>
-        {followed.length > 0 && (
-          <div className="followed">
-            <span>Recent</span>
-            {followed.map((value) => <button key={value} onClick={() => onFollowed(value)}>{shortKey(value)}</button>)}
-          </div>
-        )}
       </section>
       {profile && (
         <section className="profile-hero">
@@ -1628,31 +1892,21 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
         ) : (
           <div className="release-grid">
             {releases.map((release) => (
-              <article className="release-card" key={release.id}>
-                <div className="release-meta">
-                  <span>{formatBytes(release.torrent.size)}</span>
-                  <span>{release.torrent.files.length} {release.torrent.files.length === 1 ? "file" : "files"}</span>
-                </div>
-                <h3>{release.title}</h3>
-                <p>{release.description || "No description provided."}</p>
-                {release.tags.length > 0 && <div className="tags">{release.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
-                <code className="hash">btih:{release.torrent.info_hash}</code>
-                <footer>
-                  <span>{shortKey(release.publisher)}</span>
-                  <div>
-                    <button className="icon-button" title="Open in another torrent client" aria-label={`Open ${release.title} externally`} onClick={() => onHandoff(release)}>↗</button>
-                    {qbittorrentConnected && (
-                      <button
-                        className="secondary compact"
-                        onClick={() => onSendQbittorrent(release)}
-                      >
-                        qBittorrent
-                      </button>
-                    )}
-                    <button className="primary" onClick={() => onDownload(release)}>Choose files</button>
-                  </div>
-                </footer>
-              </article>
+              <ReleaseBrowseCard
+                key={release.id}
+                release={release}
+                claims={subjectClaims[release.torrent.info_hash] || []}
+                draft={catalogTagDrafts[release.torrent.info_hash] || ""}
+                authenticated={authenticated}
+                busy={busy}
+                qbittorrentConnected={qbittorrentConnected}
+                onDraftChange={(value) => onCatalogTagDraftChange(release.torrent.info_hash, value)}
+                onPublishTags={() => onPublishReleaseTags(release.torrent.info_hash)}
+                onNeedAuth={onNeedAuth}
+                onDownload={() => onDownload(release)}
+                onHandoff={() => onHandoff(release)}
+                onSendQbittorrent={() => onSendQbittorrent(release)}
+              />
             ))}
           </div>
         )}
@@ -1661,16 +1915,82 @@ function Discover({ publisher, profile, releases, followed, busy, authenticated,
   );
 }
 
-function Publish({ auth, authUrl, sourcePath, title, description, tags, busy, onAuth, onReopenAuth, onSourceChange, onPickSource, onTitleChange, onDescriptionChange, onTagsChange, onPublish }: {
+function ReleaseBrowseCard({
+  release,
+  claims,
+  draft,
+  authenticated,
+  busy,
+  qbittorrentConnected,
+  onDraftChange,
+  onPublishTags,
+  onNeedAuth,
+  onDownload,
+  onHandoff,
+  onSendQbittorrent,
+}: {
+  release: ReleaseV1;
+  claims: SubjectTagClaim[];
+  draft: string;
+  authenticated: boolean;
+  busy: boolean;
+  qbittorrentConnected: boolean;
+  onDraftChange: (value: string) => void;
+  onPublishTags: () => void;
+  onNeedAuth: () => void;
+  onDownload: () => void;
+  onHandoff: () => void;
+  onSendQbittorrent: () => void;
+}) {
+  return (
+    <article className="release-card">
+      <div className="release-meta">
+        <span>{formatBytes(release.torrent.size)}</span>
+        <span>{release.torrent.files.length} {release.torrent.files.length === 1 ? "file" : "files"}</span>
+      </div>
+      <h3>{release.title}</h3>
+      <p>{release.description || "No description provided."}</p>
+      <PublisherTags tags={release.tags} />
+      <ClaimChips claims={claims} />
+      <code className="hash">btih:{release.torrent.info_hash}</code>
+      <TagPublishRow
+        draft={draft}
+        authenticated={authenticated}
+        busy={busy}
+        onDraftChange={onDraftChange}
+        onPublish={onPublishTags}
+        onNeedAuth={onNeedAuth}
+      />
+      <footer>
+        <span>{shortKey(release.publisher)}</span>
+        <div>
+          <button className="icon-button" title="Open in another torrent client" aria-label={`Open ${release.title} externally`} onClick={onHandoff}>↗</button>
+          {qbittorrentConnected && (
+            <button className="secondary compact" onClick={onSendQbittorrent}>
+              qBittorrent
+            </button>
+          )}
+          <button className="primary" onClick={onDownload}>Choose files</button>
+        </div>
+      </footer>
+    </article>
+  );
+}
+
+function Publish({ auth, authUrl, authStartedAt, sourcePath, title, description, tags, busy, onAuth, onCopyAuth, onOpenAuth, onRestartAuth, onSignOut, onSourceChange, onPickSource, onTitleChange, onDescriptionChange, onTagsChange, onPublish }: {
   auth: AuthStatus;
   authUrl: string | null;
+  authStartedAt: number | null;
   sourcePath: string;
   title: string;
   description: string;
   tags: string;
   busy: boolean;
   onAuth: () => void;
-  onReopenAuth: () => void;
+  onCopyAuth: () => void;
+  onOpenAuth: () => void;
+  onRestartAuth: () => void;
+  onSignOut: () => void;
   onSourceChange: (value: string) => void;
   onPickSource: (directory: boolean) => void;
   onTitleChange: (value: string) => void;
@@ -1680,25 +2000,17 @@ function Publish({ auth, authUrl, sourcePath, title, description, tags, busy, on
 }) {
   return (
     <>
-      <section className={`panel auth-banner ${auth.authenticated ? "connected" : ""}`}>
-        <div className="auth-mark"><KeyIcon /></div>
-        <div>
-          <p className="eyebrow">{auth.authenticated ? "Ready to publish" : "Publisher access required"}</p>
-          <h2>{auth.authenticated ? "Pubky authorization active" : "Connect your Pubky"}</h2>
-          <p>{auth.authenticated
-            ? "Publishing uses a scoped grant. Your root key remains on your signing device."
-            : "Approve a capability-scoped grant for the Swarm release namespace."}</p>
-          {auth.user && <code>{auth.user}</code>}
-        </div>
-        {!auth.authenticated && (
-          <div className="auth-actions">
-            <button className="primary" disabled={busy} onClick={onAuth}>
-              {authUrl ? "Waiting for approval…" : "Authorize with Pubky"}
-            </button>
-            {authUrl && <button className="text-button" onClick={onReopenAuth}>Reopen link ↗</button>}
-          </div>
-        )}
-      </section>
+      <AuthPanel
+        auth={auth}
+        authUrl={authUrl}
+        authStartedAt={authStartedAt}
+        busy={busy}
+        onAuth={onAuth}
+        onCopy={onCopyAuth}
+        onOpen={onOpenAuth}
+        onRestart={onRestartAuth}
+        onSignOut={onSignOut}
+      />
 
       <section className="panel publish-panel">
         <div className="section-heading">
@@ -1724,8 +2036,9 @@ function Publish({ auth, authUrl, sourcePath, title, description, tags, busy, on
             <input value={title} onChange={(event) => onTitleChange(event.target.value)} placeholder="Release title" required maxLength={200} disabled={!auth.authenticated} />
           </label>
           <label>
-            Tags
+            Publisher tags
             <input value={tags} onChange={(event) => onTagsChange(event.target.value)} placeholder="film, open-media" disabled={!auth.authenticated} />
+            <small>Embedded in ReleaseV1 metadata. Public TagClaimV1 tags are added from Library or Discover.</small>
           </label>
           <label className="wide">
             Description
@@ -1785,7 +2098,7 @@ function Settings({
       </div>
       {restartRequired && (
         <div className="notice working" role="status">
-          Restart Pubky Swarm to apply DHT, UPnP, or listen-port changes.
+          Restart Torky to apply DHT, UPnP, or listen-port changes.
         </div>
       )}
       <form className="settings-form" onSubmit={onSave}>
@@ -2039,6 +2352,5 @@ function CheckIcon() { return <svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" 
 function PauseIcon() { return <svg viewBox="0 0 24 24"><path d="M8 5v14m8-14v14" /></svg>; }
 function PlayIcon() { return <svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z" /></svg>; }
 function TrashIcon() { return <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 14H7L6 7m4 4v6m4-6v6" /></svg>; }
-function KeyIcon() { return <svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4" /><path d="M12 12h9m-3 0v3m-3-3v2" /></svg>; }
 
 export default App;

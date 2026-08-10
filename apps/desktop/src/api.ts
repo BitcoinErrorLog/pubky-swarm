@@ -19,12 +19,15 @@ import type {
   ClientSettings,
   EngineStatus,
   UpdateSettingsResponse,
+  SubjectTagClaim,
+  SyncFollowedResponse,
 } from "./types";
 
 export const api = {
   startAuth: () => invoke<AuthStart>("start_auth"),
   pollAuth: () => invoke<AuthStatus>("poll_auth"),
   authStatus: () => invoke<AuthStatus>("get_auth_status"),
+  signOut: () => invoke<AuthStatus>("sign_out"),
   takePendingMagnet: () => invoke<string | null>("take_pending_magnet"),
   profile: (user: string) => invoke<Profile>("get_profile", { user }),
   releases: (user: string) =>
@@ -58,7 +61,14 @@ export const api = {
     }),
   follow: (user: string) =>
     invoke<string[]>("follow_publisher", { user }),
+  unfollow: (user: string) =>
+    invoke<string[]>("unfollow_publisher", { user }),
   followed: () => invoke<string[]>("list_followed"),
+  syncFollowed: () => invoke<SyncFollowedResponse>("sync_followed"),
+  listSubjectTags: (infoHash: string) =>
+    invoke<SubjectTagClaim[]>("list_subject_tags", { infoHash }),
+  searchCachedTagClaims: (query: string) =>
+    invoke<SubjectTagClaim[]>("search_cached_tag_claims", { query }),
   createRelease: (request: CreateReleaseRequest) =>
     invoke<ReleaseV1>("create_release", { request }),
   downloadRelease: (release: ReleaseV1, onlyFiles?: number[]) =>

@@ -105,8 +105,9 @@ svg {
 }
 
 .identity-card {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   gap: 10px;
   margin-top: auto;
   padding: 13px 11px;
@@ -114,8 +115,17 @@ svg {
   border-radius: 10px;
   background: #101310;
 }
+.identity-card .identity-actions { grid-column: 1 / -1; }
+.identity-card .session-note {
+  display: block;
+  margin-top: 4px;
+  color: var(--subtle);
+  font-size: 0.62rem;
+  white-space: normal;
+}
+.identity-actions { display: flex; gap: 8px; }
 .identity-card strong { overflow: hidden; font-size: 0.72rem; text-overflow: ellipsis; white-space: nowrap; }
-.identity-card span:not(.status-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.identity-card span:not(.status-dot):not(.session-note) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-dot {
   flex: 0 0 auto;
   width: 8px;
@@ -532,14 +542,49 @@ code {
 .release-card footer { justify-content: space-between; margin-top: 14px; color: var(--subtle); font-size: 0.63rem; }
 .release-card footer .primary { font-size: 0.68rem; }
 
-.auth-banner { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 17px; padding: 22px; }
-.auth-banner.connected { border-color: rgba(255, 59, 31, 0.24); }
+.auth-banner { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 17px; padding: 22px; }
+.auth-banner.connected, .auth-banner.waiting { border-color: rgba(255, 59, 31, 0.24); }
 .auth-mark { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 10px; color: var(--accent); background: var(--accent-dark); }
 .auth-mark svg { width: 20px; }
 .auth-banner h2 { margin: 4px 0; }
 .auth-banner p:last-of-type { margin: 0; color: var(--muted); font-size: 0.75rem; }
 .auth-banner code { max-width: 520px; margin-top: 9px; padding: 6px 8px; }
-.auth-actions { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.auth-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.auth-qr-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding-top: 8px;
+}
+.auth-qr { padding: 10px; border-radius: 12px; background: #fff; }
+.auth-url-field { display: flex; flex-direction: column; gap: 6px; font-size: 0.72rem; color: var(--muted); }
+.auth-url-field textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+}
+.auth-wait { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 0.75rem; }
+.contacts-panel .contacts-meta { margin: 0 0 12px; color: var(--muted); font-size: 0.75rem; }
+.contacts-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.contact-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.contact-row > button:first-child {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: #9da79f;
+  background: #0d100e;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.6rem;
+}
+.contact-feed, .catalog-results { display: flex; flex-direction: column; gap: 12px; }
+.claim-tags span.claimed, .tags .claimed { border-color: rgba(255, 59, 31, 0.35); color: #ffb4a8; }
+.claim-empty { margin: 0; color: var(--subtle); font-size: 0.75rem; }
+.claim-filter-results { margin-top: 12px; }
+.torrent-card .tag-publisher, .release-card .tag-publisher { margin-top: 10px; }
 .publish-panel { margin-top: 18px; padding: 24px; }
 .publish-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .publish-form label { display: flex; flex-direction: column; gap: 7px; }
@@ -657,6 +702,7 @@ code {
   .publish-form .wide { grid-column: auto; }
   .auth-banner { grid-template-columns: auto minmax(0, 1fr); }
   .auth-actions { grid-column: 1 / -1; align-items: stretch; }
+  .auth-qr-panel { grid-template-columns: 1fr; }
   .publish-submit { align-items: stretch; flex-direction: column; }
   .select-toolbar { align-items: flex-start; flex-direction: column; }
 }

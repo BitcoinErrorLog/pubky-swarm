@@ -4,5 +4,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    pubky_swarm_desktop_lib::run();
+    torky_desktop_lib::run();
 }

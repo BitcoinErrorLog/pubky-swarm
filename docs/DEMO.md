@@ -8,13 +8,35 @@ npm install
 npm run tauri dev
 ```
 
-1. Authorize the release namespace with Pubky Ring.
-2. Enter an absolute local file or directory path.
-3. Create and publish the release.
-4. On another client, enter the publisher Pubky.
-5. Load its profile and validated release records.
-6. Resolve payload peers through Mainline and download.
-7. Play supported media through the seekable loopback Range server.
+1. Connect from the sidebar identity card. Scan the QR (or copy the
+   `pubkyauth://` URL) in Pubky Ring and approve the release + tag-claim grant.
+2. Enter an absolute local file or directory path on Publish.
+3. Create and publish the release. Discover opens on the contact feed preview.
+4. On another client, follow the publisher Pubky, then **Sync now**.
+5. Load profile/releases, resolve payload peers through Mainline, and download.
+6. Play supported media through the seekable loopback Range server.
+
+## Two-human Ring smoke (required for phone approval)
+
+Use two machines (or two Torky builds) and two Ring identities.
+
+1. **Alice** opens Torky → sidebar **Connect** → Ring scans QR / pastes URL →
+   approve. Confirm sidebar shows connected and “Session ends when you quit”.
+2. **Alice** publishes a release with publisher tags, then tags the Library
+   torrent with a public claim (e.g. `public-domain`).
+3. **Bob** connects the same way, pastes Alice’s Pubky, **Follow publisher**,
+   **Sync now**. Confirm Alice’s release appears under Contacts and Alice’s
+   claim chip shows on the card.
+4. **Bob** publishes a claim on Alice’s infohash from the release card.
+5. **Alice** clicks **Sync now** and confirms Bob’s claim chip on the same
+   torrent/release without re-pasting keys.
+6. Sign out on either side; restarting the app requires a new Ring approval
+   (session is process-lifetime; grant secrets are not stored in SQLite).
+   Pending grant flows are also not restored across relaunch for the same
+   reason—restart Connect if the app quits mid-approval.
+
+Phone Ring is only required for this checklist. CI uses two testnet identities
+instead (see `docs/TESTING.md`).
 
 ## External catalogs and tagging
 
@@ -23,13 +45,15 @@ npm run tauri dev
 2. Optionally open advanced Torznab and connect a local Jackett/Prowlarr
    endpoint. Enter its API key separately; it is held only for the current app
    session.
-3. Search enabled catalogs. One unavailable source does not discard successful
-   results from other sources.
+3. Search enabled catalogs. Cached claim matches for the query appear when
+   contacts’ tags are already synced. One unavailable source does not discard
+   successful results from other sources.
 4. Select **Add magnet**. Confirm the populated magnet in Library to begin the
    transfer.
 5. Authorize Pubky and enter normalized tags on a result with a v1 infohash.
    **Publish tags** writes issuer-attributed tag claims without treating source
-   categories as authenticated facts.
+   categories as authenticated facts. Publisher `ReleaseV1.tags` remain separate
+   metadata chips.
 
 ## Origin-independent dataset proof
 

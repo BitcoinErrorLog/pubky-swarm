@@ -1,4 +1,4 @@
-# Releasing Pubky Swarm
+# Releasing Torky
 
 Production releases are built from immutable `vMAJOR.MINOR.PATCH` tags by
 `.github/workflows/release.yml`. The workflow builds on native Linux, macOS, and
@@ -117,16 +117,16 @@ Also verify the native platform signature:
 macOS:
 
 ```bash
-codesign --verify --deep --strict --verbose=2 /path/to/Pubky\ Swarm.app
-xcrun stapler validate /path/to/Pubky\ Swarm.app
-spctl --assess --type execute --verbose=2 /path/to/Pubky\ Swarm.app
+codesign --verify --deep --strict --verbose=2 /path/to/Torky.app
+xcrun stapler validate /path/to/Torky.app
+spctl --assess --type execute --verbose=2 /path/to/Torky.app
 xcrun stapler validate /path/to/Pubky\ Swarm.dmg
 ```
 
 Windows PowerShell:
 
 ```powershell
-$signature = Get-AuthenticodeSignature .\Pubky-Swarm-installer.exe
+$signature = Get-AuthenticodeSignature .\Torky-installer.exe
 $signature.Status
 $signature.SignerCertificate
 $signature.TimeStamperCertificate
@@ -139,7 +139,7 @@ Linux packages currently have SHA-256, detached Tauri/Minisign signatures, and
 GitHub provenance, but no distribution-native repository signature. Verify the
 detached signature before installation.
 
-The release SBOM is `pubky-swarm-vVERSION.sbom.cdx.json`. Inspect it with a
+The release SBOM is `torky-vVERSION.sbom.cdx.json`. Inspect it with a
 CycloneDX-compatible tool and compare it to the lockfiles. Verify GitHub
 provenance with the GitHub CLI against the repository:
 

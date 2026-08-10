@@ -330,4 +330,143 @@ mod tests {
             .await
             .expect("delete shared tag");
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[pubky_testnet::test]
+    async fn two_identity_release_and_mutual_tag_claims() {
+        let testnet = EphemeralTestnet::builder()
+            .postgres(postgres_connection())
+            .build()
+            .await
+            .expect("start official Pubky testnet");
+        let homeserver = testnet.homeserver_app().public_key();
+        let client_id = ClientId::new("pubky.swarm").expect("static client id");
+
+        let alice_sdk = testnet.sdk().expect("alice SDK");
+        let alice_adapter = PubkyAdapter::with_sdk(alice_sdk.clone());
+        let alice_signer = alice_sdk.signer(Keypair::random());
+        alice_signer
+            .signup(&homeserver, None)
+            .await
+            .expect("alice signup");
+        let alice_session = alice_signer
+            .signin_blocking(client_id.clone())
+            .await
+            .expect("alice session");
+        let alice_key = alice_session.info().public_key().clone();
+        let alice = PublisherId::new(alice_key.clone());
+
+        let bob_sdk = testnet.sdk().expect("bob SDK");
+        let bob_adapter = PubkyAdapter::with_sdk(bob_sdk.clone());
+        let bob_signer = bob_sdk.signer(Keypair::random());
+        bob_signer
+            .signup(&homeserver, None)
+            .await
+            .expect("bob signup");
+        let bob_session = bob_signer
+            .signin_blocking(client_id)
+            .await
+            .expect("bob session");
+        let bob_key = bob_session.info().public_key().clone();
+        let bob = PublisherId::new(bob_key.clone());
+
+        let alice_release = ReleaseV1::new(
+            alice.clone(),
+            1,
+            "Alice shared dataset".to_owned(),
+            "Two-identity acceptance payload".to_owned(),
+            TorrentV1 {
+                info_hash: InfoHashV1::from_bytes([0xa1; 20]),
+                size: 8,
+                files: vec![ReleaseFile {
+                    path: "alice.txt".to_owned(),
+                    size: 8,
+                }],
+                trackers: Vec::new(),
+            },
+            vec!["research".to_owned()],
+        )
+        .expect("alice release");
+        let alice_claim = TagClaimV1::new(
+            alice.clone(),
+            SubjectRef::Torrent(alice_release.torrent_ref()),
+            "public-domain".to_owned(),
+            TagOperation::Add,
+            2,
+            1,
+            SourceAttribution::Direct,
+        )
+        .expect("alice claim");
+        let alice_claim_path = format!("{TAG_CLAIMS_PATH}{}.json", alice_claim.id());
+
+        alice_adapter
+            .put_json(&alice_session, &alice_release.storage_path(), &alice_release)
+            .await
+            .expect("alice publishes release");
+        alice_adapter
+            .put_json(&alice_session, &alice_claim_path, &alice_claim)
+            .await
+            .expect("alice publishes claim");
+
+        // Bob follows Alice by reading her public namespaces (local follow graph is
+        // store-side; this proves mutual discovery over Pubky).
+        let bob_sees_releases = bob_adapter
+            .list_public(&alice_key, RELEASES_PATH, None, 10)
+            .await
+            .expect("bob lists alice releases");
+        assert!(
+            bob_sees_releases
+                .iter()
+                .any(|resource| resource.path.as_str() == alice_release.storage_path())
+        );
+        let bob_release: ReleaseV1 = bob_adapter
+            .get_public_json(&alice_key, &alice_release.storage_path())
+            .await
+            .expect("bob fetches alice release");
+        assert_eq!(bob_release, alice_release);
+        let bob_sees_alice_claim: TagClaimV1 = bob_adapter
+            .get_public_json(&alice_key, &alice_claim_path)
+            .await
+            .expect("bob fetches alice claim");
+        assert_eq!(bob_sees_alice_claim, alice_claim);
+
+        let bob_claim = TagClaimV1::new(
+            bob.clone(),
+            SubjectRef::Torrent(alice_release.torrent_ref()),
+            "verified".to_owned(),
+            TagOperation::Add,
+            3,
+            1,
+            SourceAttribution::Direct,
+        )
+        .expect("bob claim");
+        let bob_claim_path = format!("{TAG_CLAIMS_PATH}{}.json", bob_claim.id());
+        bob_adapter
+            .put_json(&bob_session, &bob_claim_path, &bob_claim)
+            .await
+            .expect("bob tags alice infohash");
+
+        let alice_sees_bob_claim: TagClaimV1 = alice_adapter
+            .get_public_json(&bob_key, &bob_claim_path)
+            .await
+            .expect("alice syncs bob claim");
+        assert_eq!(alice_sees_bob_claim, bob_claim);
+        assert_eq!(
+            alice_sees_bob_claim.subject(),
+            bob_sees_alice_claim.subject()
+        );
+
+        alice_adapter
+            .delete(&alice_session, &alice_release.storage_path())
+            .await
+            .expect("cleanup alice release");
+        alice_adapter
+            .delete(&alice_session, &alice_claim_path)
+            .await
+            .expect("cleanup alice claim");
+        bob_adapter
+            .delete(&bob_session, &bob_claim_path)
+            .await
+            .expect("cleanup bob claim");
+    }
 }

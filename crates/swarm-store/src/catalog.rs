@@ -62,6 +62,27 @@ impl Store {
         )
     }
 
+    /// Load recent cached tag claims, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns lock, `SQLite`, or artifact validation errors.
+    pub fn recent_tag_claims(&self, limit: usize) -> Result<Vec<TagClaimV1>> {
+        let limit = i64::try_from(limit.min(1_000)).unwrap_or(1_000);
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT claim_json FROM tag_claims
+             ORDER BY created_at DESC, issuer ASC, claim_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|json| serde_json::from_str(&json).map_err(Error::from))
+            .collect()
+    }
+
     /// Return the highest cached tag-claim revision for an issuer.
     ///
     /// # Errors

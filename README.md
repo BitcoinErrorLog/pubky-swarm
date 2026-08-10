@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="apps/desktop/app-icon.png" width="112" alt="Pubky Swarm icon">
+  <img src="apps/desktop/app-icon.png" width="112" alt="Torky icon">
 </p>
 
-<h1 align="center">Pubky Swarm</h1>
+<h1 align="center">Torky</h1>
 
 <p align="center">
   A Pubky-native desktop torrent client and an experiment in
@@ -23,10 +23,10 @@
 > implemented and tested. See [Current limits](#current-limits) before using it
 > for important data.
 
-## What is Pubky Swarm?
+## What is Torky?
 
 A publisher should be able to expose a changing public dataset without keeping
-one canonical origin server online forever. Pubky Swarm tests that proposition
+one canonical origin server online forever. Torky tests that proposition
 with torrents:
 
 - **Pubky identifies the publisher and authorizes public metadata.**
@@ -214,7 +214,7 @@ services/seeder/           Bounded pinning and BEP 46 reannouncement
   Pubky Ring. Current BEP 46 proofs use isolated test identities.
 - Search availability does not imply payload availability. If every peer holding
   the pieces disappears, signed metadata remains valid but the bytes are gone.
-- External catalogs are opt-in hints. Pubky Swarm does not bundle piracy-site
+- External catalogs are opt-in hints. Torky does not bundle piracy-site
   scrapers or treat third-party listings as publisher claims.
 - Production signing, notarization, and release publication require maintainer
   credentials documented in [Releasing](docs/RELEASING.md).

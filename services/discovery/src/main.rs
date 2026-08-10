@@ -1,4 +1,4 @@
-//! Optional non-authoritative Pubky Swarm discovery index.
+//! Optional non-authoritative Torky discovery index.
 
 #![forbid(unsafe_code)]
 
@@ -308,7 +308,7 @@ async fn publisher_rss(
         .map_err(ApiError::internal)?;
     releases.truncate(limit);
     Ok(rss_response(rss_feed(
-        &format!("Pubky Swarm publisher {publisher}"),
+        &format!("Torky publisher {publisher}"),
         &format!("Opt-in cached releases for Pubky publisher {publisher}"),
         &self_url,
         &base_url,
@@ -330,7 +330,7 @@ async fn search_rss(
     let self_url = format!("{base_url}/v1/search.rss?{}", serializer.finish());
     let releases = find_releases(&state, needle, None, 0, limit)?;
     Ok(rss_response(rss_feed(
-        &format!("Pubky Swarm search: {needle}"),
+        &format!("Torky search: {needle}"),
         "Lossy RSS view of the opt-in validated release cache",
         &self_url,
         &base_url,

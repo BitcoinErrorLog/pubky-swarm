@@ -1,4 +1,4 @@
-//! Native application boundary for Pubky Swarm.
+//! Native application boundary for Torky.
 
 #![forbid(unsafe_code)]
 
@@ -37,7 +37,7 @@ use url::Url;
 
 const MAINLINE_IMPORT_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXTERNAL_CATALOG_CONCURRENCY: usize = 4;
-const MAGNET_OPENED_EVENT: &str = "pubky-swarm-magnet-opened";
+const MAGNET_OPENED_EVENT: &str = "torky-magnet-opened";
 
 struct AppState {
     adapter: PubkyAdapter,
@@ -237,6 +237,25 @@ struct UpdateSettingsResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SubjectTagClaim {
+    issuer: String,
+    tag: String,
+    subject: String,
+    info_hash: Option<String>,
+    created_at: u64,
+    revision: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncFollowedResponse {
+    followed: Vec<String>,
+    releases: Vec<ReleaseV1>,
+    claim_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TorrentSummary {
     id: usize,
     info_hash: String,
@@ -308,6 +327,13 @@ async fn poll_auth(state: State<'_, AppState>) -> Result<AuthStatus, String> {
 
 #[tauri::command]
 async fn get_auth_status(state: State<'_, AppState>) -> Result<AuthStatus, String> {
+    auth_status(&state).await
+}
+
+#[tauri::command]
+async fn sign_out(state: State<'_, AppState>) -> Result<AuthStatus, String> {
+    *state.auth_flow.lock().await = None;
+    *state.session.write().await = None;
     auth_status(&state).await
 }
 
@@ -796,8 +822,89 @@ async fn follow_publisher(user: String, state: State<'_, AppState>) -> Result<Ve
 }
 
 #[tauri::command]
+async fn unfollow_publisher(user: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let publisher = PublisherId::new(PublicKey::try_from(user.as_str()).map_err(display_error)?);
+    state.store.unfollow(&publisher).map_err(display_error)?;
+    followed(&state)
+}
+
+#[tauri::command]
 async fn list_followed(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     followed(&state)
+}
+
+#[tauri::command]
+async fn sync_followed(state: State<'_, AppState>) -> Result<SyncFollowedResponse, String> {
+    let mut publishers = state
+        .store
+        .followed_publishers()
+        .map_err(display_error)?;
+    if let Some(session) = state.session.read().await.as_ref() {
+        let self_id = PublisherId::new(session.info().public_key().clone());
+        if !publishers.iter().any(|publisher| publisher == &self_id) {
+            publishers.push(self_id);
+        }
+    }
+    for publisher in &publishers {
+        let _ = sync_publisher_releases(&state, publisher).await?;
+        synchronize_tag_claims(&state, publisher).await?;
+    }
+    let claim_count = state
+        .store
+        .recent_tag_claims(1_000)
+        .map_err(display_error)?
+        .len();
+    let releases = state.store.all_releases(100).map_err(display_error)?;
+    Ok(SyncFollowedResponse {
+        followed: followed(&state)?,
+        releases,
+        claim_count,
+    })
+}
+
+#[tauri::command]
+async fn list_subject_tags(
+    info_hash: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SubjectTagClaim>, String> {
+    let info_hash: InfoHashV1 = info_hash.parse().map_err(display_error)?;
+    let subject = SubjectRef::Torrent(TorrentRef::btih(info_hash));
+    let claims = state
+        .store
+        .tag_claims_for(&subject)
+        .map_err(display_error)?;
+    Ok(claims
+        .into_iter()
+        .filter(|claim| matches!(claim.operation(), TagOperation::Add))
+        .map(subject_tag_claim)
+        .collect())
+}
+
+#[tauri::command]
+async fn search_cached_tag_claims(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SubjectTagClaim>, String> {
+    let query = query.trim().to_lowercase();
+    if query.chars().count() > 256 {
+        return Err("tag query exceeds 256 characters".to_owned());
+    }
+    let claims = state
+        .store
+        .recent_tag_claims(500)
+        .map_err(display_error)?;
+    Ok(claims
+        .into_iter()
+        .filter(|claim| matches!(claim.operation(), TagOperation::Add))
+        .filter(|claim| {
+            query.is_empty()
+                || claim.tag().contains(&query)
+                || claim.issuer().to_string().to_lowercase().contains(&query)
+                || claim.subject().to_string().to_lowercase().contains(&query)
+        })
+        .take(100)
+        .map(subject_tag_claim)
+        .collect())
 }
 
 #[tauri::command]
@@ -1092,7 +1199,7 @@ async fn forget_torrent(
 ) -> Result<(), String> {
     if delete_files {
         return Err(
-            "payload deletion is disabled until the app persists proof that files were created by Pubky Swarm; remove the transfer without deleting files"
+            "payload deletion is disabled until the app persists proof that files were created by Torky; remove the transfer without deleting files"
                 .to_owned(),
         );
     }
@@ -1270,6 +1377,33 @@ async fn synchronize_tag_claims(state: &AppState, issuer: &PublisherId) -> Resul
     Ok(())
 }
 
+async fn sync_publisher_releases(
+    state: &AppState,
+    publisher: &PublisherId,
+) -> Result<Vec<ReleaseV1>, String> {
+    let user = publisher.public_key().clone();
+    let Ok(resources) = state
+        .adapter
+        .list_public(&user, RELEASES_PATH, None, 1_000)
+        .await
+    else {
+        return state.store.releases_for(publisher).map_err(display_error);
+    };
+    let mut releases = Vec::with_capacity(resources.len());
+    for resource in resources {
+        let release: ReleaseV1 = state
+            .adapter
+            .get_public_json(&user, resource.path.as_str())
+            .await
+            .map_err(display_error)?;
+        state.store.cache_release(&release).map_err(display_error)?;
+        releases.push(release);
+    }
+    releases.sort_by_key(ReleaseV1::created_at);
+    releases.reverse();
+    Ok(releases)
+}
+
 async fn auth_status(state: &AppState) -> Result<AuthStatus, String> {
     let session = state.session.read().await;
     Ok(AuthStatus {
@@ -1295,6 +1429,21 @@ fn followed(state: &AppState) -> Result<Vec<String>, String> {
         .followed_publishers()
         .map(|values| values.into_iter().map(|value| value.to_string()).collect())
         .map_err(display_error)
+}
+
+fn subject_tag_claim(claim: TagClaimV1) -> SubjectTagClaim {
+    let info_hash = match claim.subject() {
+        SubjectRef::Torrent(reference) => reference.v1().map(|hash| hash.to_string()),
+        SubjectRef::Uri(_) => None,
+    };
+    SubjectTagClaim {
+        issuer: claim.issuer().to_string(),
+        tag: claim.tag().to_owned(),
+        subject: claim.subject().to_string(),
+        info_hash,
+        created_at: claim.created_at(),
+        revision: claim.revision(),
+    }
 }
 
 fn torrent_for_id(state: &AppState, torrent_id: usize) -> Result<torrent_engine::Torrent, String> {
@@ -1601,12 +1750,12 @@ fn http_client() -> Result<reqwest::Client, reqwest::Error> {
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Pubky-Swarm/0.1")
+        .user_agent("Torky/0.1")
         .build()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// Build and run the native Pubky Swarm application.
+/// Build and run the native Torky application.
 ///
 /// # Panics
 ///
@@ -1667,6 +1816,7 @@ pub fn run() {
             start_auth,
             poll_auth,
             get_auth_status,
+            sign_out,
             take_pending_magnet,
             get_settings,
             get_engine_status,
@@ -1683,9 +1833,13 @@ pub fn run() {
             remove_external_catalog_source,
             search_external_catalogs,
             publish_catalog_tags,
+            list_subject_tags,
+            search_cached_tag_claims,
             create_release,
             follow_publisher,
+            unfollow_publisher,
             list_followed,
+            sync_followed,
             download_release,
             import_magnet,
             import_torrent_file,
@@ -1703,7 +1857,7 @@ pub fn run() {
             get_stream_url,
         ])
         .build(tauri::generate_context!())
-        .expect("build Pubky Swarm application");
+        .expect("build Torky application");
 
     application.run(|handle, event| match event {
         tauri::RunEvent::Exit => {
@@ -1754,7 +1908,7 @@ mod tests {
         let hash = "3CA6678F769E5D37076F56EE935B84D3C28BF14E";
         let magnet = format!("magnet:?xt=urn:btih:{hash}&dn=Shared");
         let urls = magnets_from_argv(&[
-            "/Applications/Pubky Swarm.app/Contents/MacOS/Pubky Swarm".to_owned(),
+            "/Applications/Torky.app/Contents/MacOS/Torky".to_owned(),
             magnet.clone(),
             "--flag".to_owned(),
         ]);

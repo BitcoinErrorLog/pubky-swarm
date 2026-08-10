@@ -283,7 +283,7 @@ jobs:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          $pfxPath = Join-Path $env:RUNNER_TEMP "pubky-swarm-release.pfx"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "torky-release.pfx"
           [IO.File]::WriteAllBytes(
             $pfxPath,
             [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
@@ -395,7 +395,7 @@ jobs:
         with:
           path: .
           format: cyclonedx-json
-          output-file: release-assets/pubky-swarm-${{ env.RELEASE_TAG }}.sbom.cdx.json
+          output-file: release-assets/torky-${{ env.RELEASE_TAG }}.sbom.cdx.json
           upload-artifact: false
           upload-release-assets: false
 
@@ -406,7 +406,7 @@ jobs:
         run: |
           scripts/release/sign-artifacts.sh \
             release-assets \
-            "pubky-swarm-${RELEASE_TAG}.sbom.cdx.json"
+            "torky-${RELEASE_TAG}.sbom.cdx.json"
           scripts/release/checksums.sh release-assets
           scripts/release/sign-artifacts.sh release-assets SHA256SUMS
 
@@ -435,7 +435,7 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --draft \
             --verify-tag \
-            --title "Pubky Swarm ${RELEASE_TAG}" \
+            --title "Torky ${RELEASE_TAG}" \
             --generate-notes
           shopt -s nullglob
           assets=(release-assets/*)

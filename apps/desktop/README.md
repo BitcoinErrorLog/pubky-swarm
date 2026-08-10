@@ -1,4 +1,4 @@
-# Pubky Swarm Desktop
+# Torky Desktop
 
 Tauri/React interface for Pubky authorization, release publication, direct
 publisher discovery, torrent download progress, and seekable media playback.

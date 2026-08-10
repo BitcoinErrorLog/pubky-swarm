@@ -1,6 +1,6 @@
 # Acceptance testing
 
-Pubky Swarm tests user outcomes at more than one layer. A frontend mock alone is
+Torky tests user outcomes at more than one layer. A frontend mock alone is
 not accepted as evidence that transfer or publication works.
 
 ## Catalog magnet to downloaded bytes
@@ -31,12 +31,29 @@ TEST_PUBKY_CONNECTION_STRING='postgres://USER@127.0.0.1:5432/postgres?pubky-test
 The test uses generated metadata only. It proves public sharing with another
 reader identity boundary, not merely insertion into the local SQLite cache.
 
+## Two-identity social loop
+
+Alice publishes a `ReleaseV1` and `TagClaimV1` on her BTIH. Bob lists and
+fetches both, then publishes his own `TagClaimV1` on the same subject. Alice
+retrieves Bob’s claim. This is the automated gate for mutual discovery (follow
+graph remains local SQLite in the desktop app; Pubky visibility is proven here).
+
+```bash
+TEST_PUBKY_CONNECTION_STRING='postgres://USER@127.0.0.1:5432/postgres?pubky-test=true' \
+  cargo test -p pubky-adapter two_identity_release_and_mutual_tag_claims
+```
+
+Phone Ring QR approval is covered by the manual checklist in `docs/DEMO.md`, not
+CI.
+
 ## Desktop interaction contract
 
-The React acceptance test searches an external catalog, clicks **Add magnet**,
-verifies the exact magnet reaches Library, submits it through the Tauri API
-boundary, and exercises tag publication. It also covers encoded and literal
-BTIH query values.
+The React acceptance tests cover:
+
+- External catalog → Library magnet submit and tag publication
+- Auth QR/URL panel, copy, and poll success clearing wait state
+- Follow/sync contact feed with claim chips
+- Library torrent tag publish with the correct infohash
 
 ```bash
 cd apps/desktop

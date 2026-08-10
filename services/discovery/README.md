@@ -1,4 +1,4 @@
-# Pubky Swarm discovery service
+# Torky discovery service
 
 This optional service indexes only publishers explicitly refreshed through
 `POST /v1/publishers/{publisher}/refresh`. It searches the validated

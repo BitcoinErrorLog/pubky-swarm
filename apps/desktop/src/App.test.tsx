@@ -8,8 +8,15 @@ import App, { isMagnet } from "./App";
 
 const apiMock = vi.hoisted(() => ({
   authStatus: vi.fn(),
+  startAuth: vi.fn(),
+  pollAuth: vi.fn(),
+  signOut: vi.fn(),
   takePendingMagnet: vi.fn(),
   followed: vi.fn(),
+  unfollow: vi.fn(),
+  syncFollowed: vi.fn(),
+  listSubjectTags: vi.fn(),
+  searchCachedTagClaims: vi.fn(),
   qbittorrentStatus: vi.fn(),
   torrents: vi.fn(),
   externalCatalogSources: vi.fn(),
@@ -22,7 +29,13 @@ const apiMock = vi.hoisted(() => ({
   updateSettings: vi.fn(),
   rssPresets: vi.fn(),
   addRssFeed: vi.fn(),
+  follow: vi.fn(),
+  profile: vi.fn(),
+  releases: vi.fn(),
 }));
+
+const openUrlMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const clipboardWriteMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 const eventMock = vi.hoisted(() => ({
   callbacks: [] as Array<() => void>,
@@ -38,7 +51,12 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({
-  openUrl: vi.fn().mockResolvedValue(undefined),
+  openUrl: openUrlMock,
+}));
+vi.mock("qrcode.react", () => ({
+  QRCodeSVG: ({ value }: { value: string }) => (
+    <svg data-testid="qr-code" data-value={value} />
+  ),
 }));
 
 const infoHash = "0123456789abcdef0123456789abcdef01234567";
@@ -63,9 +81,31 @@ function externalResult() {
 
 beforeEach(() => {
   window.focus = vi.fn();
+  clipboardWriteMock.mockReset();
+  clipboardWriteMock.mockResolvedValue(undefined);
+  Object.defineProperty(Navigator.prototype, "clipboard", {
+    configurable: true,
+    get: () => ({ writeText: clipboardWriteMock }),
+  });
   apiMock.authStatus.mockResolvedValue({ authenticated: false, user: null });
+  apiMock.startAuth.mockResolvedValue({
+    authorization_url: "pubkyauth://approve?secret=test",
+  });
+  apiMock.pollAuth.mockResolvedValue({ authenticated: false, user: null });
+  apiMock.signOut.mockResolvedValue({ authenticated: false, user: null });
   apiMock.takePendingMagnet.mockResolvedValue(null);
   apiMock.followed.mockResolvedValue([]);
+  apiMock.unfollow.mockResolvedValue([]);
+  apiMock.syncFollowed.mockResolvedValue({
+    followed: [],
+    releases: [],
+    claimCount: 0,
+  });
+  apiMock.listSubjectTags.mockResolvedValue([]);
+  apiMock.searchCachedTagClaims.mockResolvedValue([]);
+  apiMock.follow.mockResolvedValue(["pubky1alice"]);
+  apiMock.profile.mockResolvedValue({ name: "Alice", bio: "Publisher" });
+  apiMock.releases.mockResolvedValue([]);
   apiMock.qbittorrentStatus.mockResolvedValue({ connected: false, version: null });
   apiMock.torrents.mockResolvedValue([]);
   apiMock.externalCatalogSources.mockResolvedValue([{
@@ -149,6 +189,8 @@ beforeEach(() => {
     restartRequired: false,
   }));
   eventMock.callbacks.length = 0;
+  openUrlMock.mockClear();
+  clipboardWriteMock.mockClear();
 });
 
 afterEach(() => {
@@ -268,6 +310,126 @@ describe("rss feeds", () => {
       expect(apiMock.addRssFeed).toHaveBeenCalledWith({
         feedUrl: "https://example.org/open-research.xml",
       });
+    });
+  });
+});
+
+describe("auth handoff", () => {
+  it("shows QR and copyable pubkyauth URL, then clears wait state on poll success", async () => {
+    const user = userEvent.setup();
+    const authUrl = "pubkyauth://approve?secret=test";
+    apiMock.pollAuth.mockResolvedValue({ authenticated: true, user: "pubky1tester" });
+
+    render(<App />);
+    const connect = screen.getAllByRole("button", { name: "Connect" })
+      .find((button) => button.className.includes("compact"));
+    expect(connect).toBeTruthy();
+    await user.click(connect as HTMLElement);
+
+    expect(await screen.findByTestId("auth-qr-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("qr-code")).toHaveAttribute("data-value", authUrl);
+    expect(screen.getByLabelText("Authorization URL")).toHaveValue(authUrl);
+    expect(openUrlMock).toHaveBeenCalledWith(authUrl);
+
+    await user.click(screen.getByTestId("open-auth-url"));
+    expect(openUrlMock).toHaveBeenCalledTimes(2);
+
+    await user.click(screen.getByTestId("copy-auth-url"));
+    expect(await screen.findByTestId("auth-copied")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiMock.pollAuth).toHaveBeenCalled();
+    }, { timeout: 5_000 });
+    await waitFor(() => {
+      expect(screen.queryByTestId("auth-qr-panel")).not.toBeInTheDocument();
+    }, { timeout: 5_000 });
+    expect(await screen.findByText("Publisher connected")).toBeInTheDocument();
+  }, 15_000);
+});
+
+describe("social loop surfaces", () => {
+  const alice = "pubky1alicepublisherkeyxxxxxxxxxxxxxxxx";
+  const bob = "pubky1bobpublisherkeyxxxxxxxxxxxxxxxxxx";
+  const aliceRelease = {
+    schema: "pubky.swarm/release",
+    version: 1,
+    id: "release-1",
+    publisher: alice,
+    created_at: 1,
+    title: "Alice Dataset",
+    description: "Shared research",
+    torrent: {
+      info_hash: infoHash,
+      size: 42,
+      files: [{ path: "data.bin", size: 42 }],
+      trackers: [],
+    },
+    tags: ["research"],
+  };
+
+  it("syncs followed contacts and renders claim chips on the feed", async () => {
+    apiMock.authStatus.mockResolvedValue({ authenticated: true, user: bob });
+    apiMock.followed.mockResolvedValue([alice]);
+    apiMock.syncFollowed.mockResolvedValue({
+      followed: [alice],
+      releases: [aliceRelease],
+      claimCount: 1,
+    });
+    apiMock.listSubjectTags.mockResolvedValue([
+      {
+        issuer: alice,
+        tag: "public-domain",
+        subject: `torrent:btih:${infoHash}`,
+        infoHash,
+        createdAt: 1,
+        revision: 1,
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Discover" }));
+    expect(await screen.findByText("Contacts")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Sync now" }));
+
+    await waitFor(() => {
+      expect(apiMock.syncFollowed).toHaveBeenCalled();
+    });
+    expect(await screen.findByText("Alice Dataset")).toBeInTheDocument();
+    expect(await screen.findByText(/#public-domain/)).toBeInTheDocument();
+    expect(screen.getByText(/#research/)).toBeInTheDocument();
+  });
+
+  it("publishes tags from a library torrent with the correct infohash", async () => {
+    apiMock.authStatus.mockResolvedValue({ authenticated: true, user: bob });
+    apiMock.torrents.mockResolvedValue([
+      {
+        id: 3,
+        infoHash,
+        name: "Library seed",
+        state: "seeding",
+        progressBytes: 42,
+        totalBytes: 42,
+        uploadedBytes: 1,
+        downloadMbps: 0,
+        uploadMbps: 0.1,
+        peersConnected: 1,
+        peersSeen: 2,
+        ratio: 1,
+        eta: null,
+        finished: true,
+        error: null,
+        files: [{ index: 0, path: "data.bin", length: 42, included: true }],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const tags = await screen.findByLabelText("Public tag claims");
+    await user.type(tags, "verified");
+    await user.click(screen.getByRole("button", { name: "Publish tags" }));
+
+    await waitFor(() => {
+      expect(apiMock.publishCatalogTags).toHaveBeenCalledWith(infoHash, ["verified"]);
     });
   });
 });

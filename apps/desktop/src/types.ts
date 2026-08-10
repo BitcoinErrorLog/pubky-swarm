@@ -7,6 +7,21 @@ export type AuthStart = {
   authorization_url: string;
 };
 
+export type SubjectTagClaim = {
+  issuer: string;
+  tag: string;
+  subject: string;
+  infoHash: string | null;
+  createdAt: number;
+  revision: number;
+};
+
+export type SyncFollowedResponse = {
+  followed: string[];
+  releases: ReleaseV1[];
+  claimCount: number;
+};
+
 export type Profile = {
   name: string;
   bio?: string | null;

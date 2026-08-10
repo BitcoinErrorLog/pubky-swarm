@@ -1,4 +1,4 @@
-"""qBittorrent search plugin for a local Pubky Swarm discovery service."""
+"""qBittorrent search plugin for a local Torky discovery service."""
 
 import json
 import urllib.parse
@@ -11,7 +11,7 @@ class pubky_swarm:
     """Search the service's opt-in, non-authoritative validated release cache."""
 
     url = "http://127.0.0.1:7780"
-    name = "Pubky Swarm"
+    name = "Torky"
     supported_categories = {"all": "all"}
 
     def search(self, what, cat="all"):
@@ -21,7 +21,7 @@ class pubky_swarm:
         endpoint = f"{self.url}/v1/search?{query}"
         request = urllib.request.Request(
             endpoint,
-            headers={"Accept": "application/json", "User-Agent": "qBittorrent-Pubky-Swarm/1"},
+            headers={"Accept": "application/json", "User-Agent": "qBittorrent-Torky/1"},
         )
         with urllib.request.urlopen(request, timeout=15) as response:
             results = json.load(response)

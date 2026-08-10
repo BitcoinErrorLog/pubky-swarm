@@ -91,10 +91,10 @@ fn rss_item(xml: &mut String, base_url: &str, release: &ReleaseV1) {
     text(xml, &details);
     xml.push_str("</guid>\n");
     let description = if release.description().is_empty() {
-        format!("Pubky Swarm cached release. {AUTHORITY_SIGNAL}.")
+        format!("Torky cached release. {AUTHORITY_SIGNAL}.")
     } else {
         format!(
-            "{}\n\nPubky Swarm cached release. {AUTHORITY_SIGNAL}.",
+            "{}\n\nTorky cached release. {AUTHORITY_SIGNAL}.",
             release.description()
         )
     };
@@ -120,7 +120,7 @@ fn rss_item(xml: &mut String, base_url: &str, release: &ReleaseV1) {
 pub(crate) fn torznab_caps(base_url: &str) -> String {
     let search_url = format!("{base_url}/api");
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<caps>\n");
-    xml.push_str("<server version=\"1.0\" title=\"Pubky Swarm Discovery\" />\n");
+    xml.push_str("<server version=\"1.0\" title=\"Torky Discovery\" />\n");
     xml.push_str("<limits max=\"100\" default=\"25\" />\n");
     xml.push_str(
         "<searching><search available=\"yes\" supportedParams=\"q,cat,limit,offset,tag\" />",
@@ -131,7 +131,7 @@ pub(crate) fn torznab_caps(base_url: &str) -> String {
     xml.push_str("<book-search available=\"no\" supportedParams=\"\" /></searching>\n");
     xml.push_str("<categories><category id=\"");
     xml.push_str(TORZNAB_CATEGORY);
-    xml.push_str("\" name=\"Pubky Swarm\" /></categories>\n");
+    xml.push_str("\" name=\"Torky\" /></categories>\n");
     xml.push_str("<tags><tag name=\"non-authoritative\" description=\"");
     attribute(&mut xml, AUTHORITY_SIGNAL);
     xml.push_str("\" /></tags>\n");
@@ -157,7 +157,7 @@ pub(crate) fn torznab_feed(
          xmlns:torznab=\"http://torznab.com/schemas/2015/feed\" \
          xmlns:pubky=\"https://pubky.org/swarm/discovery/1.0\">\n<channel>\n",
     );
-    element(&mut xml, "title", "Pubky Swarm Discovery");
+    element(&mut xml, "title", "Torky Discovery");
     element(&mut xml, "link", base_url);
     element(
         &mut xml,
@@ -227,11 +227,11 @@ pub(crate) fn open_search_description(base_url: &str) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <OpenSearchDescription xmlns=\"http://a9.com/-/spec/opensearch/1.1/\">\n",
     );
-    element(&mut xml, "ShortName", "Pubky Swarm");
+    element(&mut xml, "ShortName", "Torky");
     element(
         &mut xml,
         "Description",
-        "Non-authoritative search of opt-in cached Pubky Swarm releases",
+        "Non-authoritative search of opt-in cached Torky releases",
     );
     xml.push_str(
         "<InputEncoding>UTF-8</InputEncoding>\n<Url type=\"application/rss+xml\" template=\"",

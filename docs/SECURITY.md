@@ -85,7 +85,7 @@ contains public metainfo and resume state.
 External feed categories remain untrusted metadata. The app never downloads a
 catalog result until the user confirms the populated magnet form. Publishing a
 tag creates a separate issuer-attributed Pubky claim; it does not rewrite the
-source release or imply that Pubky Swarm verified the source's description.
+source release or imply that Torky verified the source's description.
 
 ## Availability is not permanence
 
